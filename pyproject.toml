@@ -1,0 +1,29 @@
+[project]
+name = "pulumi-oci-oke"
+version = "0.1.0"
+description = "Provision an OKE cluster on Oracle Cloud Infrastructure."
+requires-python = ">=3.14"
+dependencies = [
+    "pulumi",
+    "pulumi-kubernetes==4.34.2",
+    "pulumi-oci",
+]
+
+[dependency-groups]
+dev = [
+    "bandit[toml]",
+    "black",
+    "pylint",
+    "pre-commit",
+    "pytest",
+    "ruff",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 120
+
+[tool.bandit]
+exclude_dirs = ["tests"]

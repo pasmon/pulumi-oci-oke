@@ -1,0 +1,23 @@
+[FORMAT]
+# Maximum number of characters on a single line.
+max-line-length=120
+
+[MESSAGES CONTROL]
+
+# Test methods are named after the behaviour they assert, and the class
+# docstring already describes the group, so per-test docstrings add nothing.
+# Fixtures shadowing module-level names is the standard pytest idiom.
+disable=missing-function-docstring,
+        redefined-outer-name,
+        # A Config is a flat bag of validated settings; splitting it would
+        # scatter one coherent set of options across several classes.
+        too-many-instance-attributes,
+        # Small grouped test classes exist to organise assertions, not to
+        # expose a public API.
+        too-few-public-methods
+
+[MISCELLANEOUS]
+
+# List of note tags to take in consideration, separated by a comma.
+notes=FIXME,
+      XXX,
