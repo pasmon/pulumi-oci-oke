@@ -20,8 +20,19 @@ ALWAYS_FREE_MEMORY_GB = 12
 # Block volume Always Free allowance, boot and data volumes combined.
 ALWAYS_FREE_BLOCK_VOLUME_GB = 200
 
-# The audio cache PVC requested by argo-apps (see the audio-gateway chart).
-AUDIO_CACHE_GB = 20
+# Provisioned size of the shared audio cache PVC that argo-apps creates. The
+# claim requests 20Gi, but OCI Block Volume has a 50 GB minimum and rounds the
+# request up rather than rejecting it, so 50 is what the tenancy is billed for.
+# Budgeting the requested size instead understated usage by 30 GB.
+AUDIO_CACHE_GB = 50
+
+# Provisioned size of the radio-db CloudNativePG data volume, for the same
+# reason: 50 GB is the OCI Block Volume floor, so no smaller claim is possible.
+DATABASE_VOLUME_GB = 50
+
+# Every block volume this tenancy keeps permanently provisioned. Kept together
+# so the Always Free check and the README cost table cannot drift apart.
+DATA_VOLUME_GB = AUDIO_CACHE_GB + DATABASE_VOLUME_GB
 
 # Each node's tunnel address reuses the last octet of its private IP, so the
 # tunnel subnet has to be wide enough for those octets to stay inside it.
@@ -160,8 +171,8 @@ class Config:
 
     @property
     def total_block_volume_gb(self):
-        """Boot volumes plus the shared audio cache PVC."""
-        return (self.boot_volume_size_gbs * self.node_count) + AUDIO_CACHE_GB
+        """Boot volumes plus every permanently provisioned data volume."""
+        return (self.boot_volume_size_gbs * self.node_count) + DATA_VOLUME_GB
 
     @property
     def wireguard_enabled(self):
@@ -246,10 +257,34 @@ class Config:
                 f"got {self.boot_volume_size_gbs}"
             )
 
-        if self.total_block_volume_gb > ALWAYS_FREE_BLOCK_VOLUME_GB:
-            raise ValueError(
-                f"boot volumes plus the audio cache need {self.total_block_volume_gb} GB, "
-                f"which exceeds the {ALWAYS_FREE_BLOCK_VOLUME_GB} GB Always Free block volume allowance"
+        # The allowance is an inclusive ceiling and the defaults land exactly on
+        # it, so this is `>=` rather than `>`. Reaching the ceiling is not
+        # rejected: a tenancy sitting at 200 GB is still inside Always Free,
+        # and refusing to preview it would make the configuration unusable.
+        # What matters is that there is no headroom left, which is a cost
+        # decision rather than an impossible configuration. It therefore warns,
+        # like the node pool overage below, rather than raising.
+        if self.total_block_volume_gb >= ALWAYS_FREE_BLOCK_VOLUME_GB:
+            print(
+                "\n"
+                "  ================================================================\n"
+                "   COST WARNING: block volumes leave no Always Free headroom\n"
+                "  ================================================================\n"
+                f"   boot volumes     : {self.boot_volume_size_gbs * self.node_count} GB "
+                f"({self.node_count} x {self.boot_volume_size_gbs} GB)\n"
+                f"   audio cache      : {AUDIO_CACHE_GB} GB\n"
+                f"   radio database   : {DATABASE_VOLUME_GB} GB\n"
+                f"   total            : {self.total_block_volume_gb} GB\n"
+                f"   Always Free allows: {ALWAYS_FREE_BLOCK_VOLUME_GB} GB per tenancy\n"
+                "\n"
+                "   This is still inside Always Free, but nothing else fits. Both data\n"
+                "   volumes are already at the 50 GB OCI Block Volume minimum, so they\n"
+                "   cannot be made smaller, and expanding either one bills immediately.\n"
+                "   This also rules out volumeSnapshot backups for the database, which\n"
+                "   draw on the same allowance. To create headroom, drop a node:\n"
+                "\n"
+                "       pulumi config set node-count 1\n"
+                "\n"
             )
 
         if (
