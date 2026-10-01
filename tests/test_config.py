@@ -2,6 +2,11 @@
 
 import pytest
 
+from oke.config import (
+    ALWAYS_FREE_BLOCK_VOLUME_GB,
+    AUDIO_CACHE_GB,
+    DATABASE_VOLUME_GB,
+)
 from tests.conftest import build_config
 
 
@@ -68,11 +73,20 @@ class TestNodeSizing:
 
     def test_within_always_free_does_not_warn(self, capsys):
         build_config(node_count=2, node_ocpus=1, node_memory_gbs=6)
-        assert "COST WARNING" not in capsys.readouterr().out
+        # Scoped to the node-pool warning. This configuration is at the node
+        # allowance, but two nodes still consume the whole block volume
+        # budget, which is warned about separately.
+        assert (
+            "node pool exceeds the Always Free allowance" not in capsys.readouterr().out
+        )
 
     def test_single_node_at_full_allowance_does_not_warn(self, capsys):
         build_config(node_count=1, node_ocpus=2, node_memory_gbs=12)
-        assert "COST WARNING" not in capsys.readouterr().out
+        output = capsys.readouterr().out
+        assert "node pool exceeds the Always Free allowance" not in output
+        # One node leaves 150 GB of the 200 GB allowance, so there is real
+        # headroom and no block volume warning either.
+        assert "no Always Free headroom" not in output
 
     def test_zero_nodes_is_rejected(self):
         with pytest.raises(ValueError, match="node-count must be at least 1"):
@@ -88,15 +102,36 @@ class TestNodeSizing:
         ):
             build_config(boot_volume_size_gbs=47)
 
-    def test_block_volume_over_always_free_is_rejected(self):
-        # 4 nodes x 50 GB boot volumes plus the 20 GB cache exceeds 200 GB.
-        with pytest.raises(ValueError, match="Always Free block volume allowance"):
-            build_config(node_count=4, boot_volume_size_gbs=50)
-
-    def test_block_volume_budget_accounts_for_the_cache(self):
+    def test_block_volume_budget_accounts_for_every_data_volume(self):
         cfg = build_config(node_count=2, boot_volume_size_gbs=50)
-        # 2 x 50 GB boot volumes plus the 20 GB shared audio cache.
-        assert cfg.total_block_volume_gb == 120
+        # 2 x 50 GB boot volumes, plus the 50 GB audio cache and the 50 GB
+        # database. Both data volumes are the OCI Block Volume floor, which is
+        # what the tenancy is billed for rather than what the PVC requests.
+        assert cfg.total_block_volume_gb == 200
+
+    def test_block_volume_accounting_uses_provisioned_not_requested_size(self):
+        """The 20Gi audio cache claim is provisioned at the 50 GB OCI minimum.
+
+        Budgeting the requested 20 GB understated the tenancy by 30 GB and let
+        a configuration that actually billed 200 GB pass as 170 GB.
+        """
+        assert AUDIO_CACHE_GB == 50
+        assert DATABASE_VOLUME_GB == 50
+
+    def test_defaults_reach_the_always_free_block_volume_ceiling(self, capsys):
+        """Defaults sit exactly on 200 GB, so they must warn, not raise.
+
+        Reaching the ceiling is still inside Always Free. Raising here would
+        make the default configuration impossible to preview.
+        """
+        cfg = build_config(node_count=2, boot_volume_size_gbs=50)
+        assert cfg.total_block_volume_gb == ALWAYS_FREE_BLOCK_VOLUME_GB
+        assert "no Always Free headroom" in capsys.readouterr().out
+
+    def test_block_volume_headroom_is_reported(self, capsys):
+        """One node leaves 100 GB spare, so the warning stays quiet."""
+        build_config(node_count=1, boot_volume_size_gbs=50)
+        assert "no Always Free headroom" not in capsys.readouterr().out
 
 
 class TestWireguardValidation:
