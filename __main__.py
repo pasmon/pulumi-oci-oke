@@ -46,7 +46,7 @@ oke = cluster.create_cluster(
 # OKE returns a kubeconfig already pointed at the public endpoint, so unlike the
 # self-managed RKE2 setup there is no server address to rewrite.
 admin_kubeconfig = kubeconfig.get_kubeconfig(oke["cluster"].id)
-admin_kubeconfig.content.apply(lambda content: kubeconfig.write_kubeconfig(content))
+admin_kubeconfig.content.apply(kubeconfig.write_kubeconfig)
 
 # --------------------------------------------------------------------------- #
 # Namespaces that GitOps writes into

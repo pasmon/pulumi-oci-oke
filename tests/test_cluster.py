@@ -7,6 +7,7 @@ The pure functions are tested directly; the Pulumi wiring is exercised by
 import pytest
 
 from oke import cluster
+from oke.config import DEFAULT_NODE_SHAPE
 
 
 class FakeSource:
@@ -120,8 +121,6 @@ class TestNodeShape:
     """The node shape is the Always Free Ampere A1 flexible shape."""
 
     def test_shape_is_a1_flex(self):
-        from oke.config import DEFAULT_NODE_SHAPE
-
         assert DEFAULT_NODE_SHAPE == "VM.Standard.A1.Flex"
 
     def test_node_pool_is_queried_for_arm(self):
