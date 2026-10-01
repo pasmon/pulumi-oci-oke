@@ -99,9 +99,13 @@ uv run pytest -v
 
 Do not modify `argo-apps` or the workload charts to work around something in this
 repository. For example, the shared `radio-audio-cache` volume needs the two
-consumers on one node; that is solved with `nodeAffinity` on the PVC in
-`argo-apps`, not with pod affinity on the workloads, because the charts expose no
-such values.
+consumers on one node, because OCI block volumes are single-attach. That is
+solved in `argo-apps` with required pod affinity in
+`apps/values/radio-audio-gateway.yaml`, on the gateway only. Two details are
+easy to get backwards: a `PersistentVolumeClaim` has no `nodeAffinity` field, so
+one set on a claim is discarded by the API server and the claim cannot carry the
+constraint; and the gateway and worker charts *do* expose `affinity`, which is
+why their pinned releases cannot move back to the versions that lacked it.
 
 ## Destroying
 
