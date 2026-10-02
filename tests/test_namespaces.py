@@ -20,17 +20,25 @@ class TestNamespaceNames:
     def test_monitoring_namespace(self):
         assert namespaces.MONITORING_NAMESPACE == "monitoring"
 
-    def test_radio_namespace_constant_exists(self):
-        # Owned by argo-apps, declared here only for documentation.
-        assert namespaces.RADIO_NAMESPACE == "radio"
+    def test_eso_namespace(self):
+        # The Workload Identity ServiceAccount has to be created before any
+        # Application references it, so its namespace cannot wait for GitOps.
+        assert namespaces.ESO_NAMESPACE == "external-secrets"
 
     def test_namespaces_are_distinct(self):
         names = {
             namespaces.CERT_MANAGER_NAMESPACE,
             namespaces.MONITORING_NAMESPACE,
-            namespaces.RADIO_NAMESPACE,
+            namespaces.ESO_NAMESPACE,
         }
         assert len(names) == 3
+
+    def test_config_agrees_with_the_module_constant(self):
+        # The ServiceAccount is created in cfg.eso_service_account_namespace
+        # while the namespace is created from ESO_NAMESPACE. Two sources of
+        # truth would let the ServiceAccount land in a namespace that does not
+        # exist, which fails at apply rather than at preview.
+        assert build_config().eso_service_account_namespace == namespaces.ESO_NAMESPACE
 
 
 class TestNoSecretsInThisModule:

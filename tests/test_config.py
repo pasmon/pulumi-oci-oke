@@ -1,12 +1,16 @@
 """Unit tests for the configuration validation rules."""
 
+import inspect
+
 import pytest
 
 from oke.config import (
     ALWAYS_FREE_BLOCK_VOLUME_GB,
     AUDIO_CACHE_GB,
     DATABASE_VOLUME_GB,
+    Config,
 )
+from tests.conftest import FakeConfig as _FakeConfig
 from tests.conftest import build_config
 
 
@@ -195,28 +199,6 @@ class TestWireguardValidation:
             )
 
 
-class TestTlsValidation:
-    """TLS fields must be set together."""
-
-    def test_domain_alone_is_rejected(self):
-        with pytest.raises(
-            ValueError, match="tls-domain and cloudflare-email together"
-        ):
-            build_config(tls_domain="radio.example.com")
-
-    def test_email_alone_is_rejected(self):
-        with pytest.raises(
-            ValueError, match="tls-domain and cloudflare-email together"
-        ):
-            build_config(cloudflare_email="you@example.com")
-
-    def test_both_is_accepted(self):
-        cfg = build_config(
-            tls_domain="radio.example.com", cloudflare_email="you@example.com"
-        )
-        assert cfg.tls_domain == "radio.example.com"
-
-
 class TestOcidValidation:
     """Malformed OCIDs are caught early rather than failing inside OCI."""
 
@@ -226,20 +208,71 @@ class TestOcidValidation:
         ):
             build_config(tenancy_id="not-an-ocid")
 
-    def test_malformed_vault_is_rejected(self):
-        with pytest.raises(ValueError, match="vault-id .* does not look like an OCID"):
-            build_config(vault_id="ocid1.vault")
-
-    def test_well_formed_ocids_are_accepted(self):
+    def test_well_formed_tenancy_is_accepted(self):
         cfg = build_config(
-            tenancy_id="ocid1.tenancy.oc1..testtenancy0000000000000000000000000000000",
-            vault_id="ocid1.vault.oc1.eu-stockholm-1.aaaaaaaaexample",
+            tenancy_id="ocid1.tenancy.oc1..testtenancy0000000000000000000000000000000"
         )
-        assert cfg.vault_id.startswith("ocid1.vault.oc1.eu-stockholm-1")
+        assert cfg.tenancy_id.startswith("ocid1.tenancy.oc1..")
+
+
+class TestRemovedConfigKeys:
+    """Config keys this program never consumed are gone, not merely unused.
+
+    Each of these read as if it configured something and did not. A key that
+    nothing reads is a place for a stale value to hide, which is worse than its
+    absence: the operator believes the value is in effect.
+    """
+
+    def test_tls_keys_are_not_loaded(self):
+        cfg = build_config(
+            tls_domain="radio.example.com", cloudflare_email="you@example.com"
+        )
+        assert not hasattr(cfg, "tls_domain")
+        assert not hasattr(cfg, "cloudflare_email")
+
+    def test_vault_id_is_not_loaded(self):
+        # The vault is named in argo-apps' ClusterSecretStore, which is the only
+        # place that reads it. Nothing in this program touches the vault.
+        cfg = build_config(vault_id="ocid1.vault.oc1.eu-stockholm-1.aaaaaaaaexample")
+        assert not hasattr(cfg, "vault_id")
+
+    def test_source_declares_no_removed_key(self):
+        source = inspect.getsource(Config)
+        for key in ("tls-domain", "cloudflare-email", "vault-id"):
+            assert f'"{key}"' not in source
+
+
+class TestGitopsHandoverConfig:
+    """The hand-over target is the GitOps repo's own entrypoint."""
+
+    def test_default_path_is_the_app_of_apps_directory(self):
+        # Not a bootstrap tree in this repo. The GitOps repository declares its
+        # own entrypoint, so Pulumi does not get a say in it.
+        assert build_config().argocd_repo_path == "app-of-apps"
+
+    def test_path_is_overridable(self):
+        cfg = build_config(argocd_repo_path="some/other/path")
+        assert cfg.argocd_repo_path == "some/other/path"
+
+    def test_repo_url_is_required(self):
+        # A missing URL has no default: pointing the hand-over at the wrong
+        # repository is the one mistake that must not be made silently.
+        with pytest.raises(KeyError):
+            Config(
+                _FakeConfig(
+                    {
+                        "compartment-id": "ocid1.compartment.oc1..test",
+                        "ssh-public-key-path": "unused",
+                    }
+                )
+            )
 
 
 class TestArgoCdDefaults:
     """Argo CD defaults keep the single-owner and no-exposure rules."""
+
+    def test_target_revision_defaults_to_main(self):
+        assert build_config().argocd_repo_target_revision == "main"
 
     def test_managed_by_pulumi_by_default(self):
         assert build_config().argocd_managed_by_pulumi is True

@@ -11,9 +11,10 @@ Break either of these and the design stops working.
 
 **1. One `pulumi up` must be sufficient.** Pulumi may not create, or depend on,
 any object whose CRD is installed by Argo CD. Every Pulumi resource is either an
-OCI resource or one of `Namespace`, `Secret`, `helm.sh/v3 Release`,
-`argoproj.io/v1alpha1 Application`. If you find yourself wanting to `kubectl wait`
-for a CRD, the resource belongs in `argo-apps` instead.
+OCI resource or one of `Namespace`, `ServiceAccount`, `Secret`,
+`helm.sh/v3 Release`, `argoproj.io/v1alpha1 Application`. If you find yourself
+wanting to `kubectl wait` for a CRD, the resource belongs in `argo-apps`
+instead.
 
 **2. Pulumi creates no application secret.** Credentials live in OCI Vault and
 enter the cluster only through External Secrets Operator, authenticated by OKE
@@ -24,6 +25,14 @@ remote, which is inherent to bootstrapping GitOps.
 `tests/test_namespaces.py` enforces the second one as an assertion rather than a
 comment.
 
+**3. The hand-over is one Application and there is no `gitops/` tree.** Pulumi
+seeds `bootstrap-root` at `argocd-repo-path` in `argo-apps`, with
+`directory: recurse`, and that is the whole of the GitOps involvement. It uses
+the `default` project, because Argo CD creates that project itself and a named
+one would have to exist before the Application that defines it. Adding a second
+seed Application, an `AppProject`, or a manifest directory to sync is a
+regression. `tests/test_program_wiring.py` asserts the absence.
+
 ## Layout
 
 | Path | Purpose |
@@ -32,12 +41,11 @@ comment.
 | `oke/config.py` | Loads and validates all stack config. No resources. |
 | `oke/networking.py` | VCN, gateways, route table, security lists, subnets |
 | `oke/cluster.py` | Availability domain and image discovery, cluster, node pool |
-| `oke/identity.py` | OKE `DynamicGroup` for Workload Identity |
+| `oke/identity.py` | OKE `DynamicGroup` and the ESO `ServiceAccount` |
 | `oke/kubeconfig.py` | Fetches and writes `out/oke_kubeconfig` |
-| `oke/argocd.py` | Argo CD Helm release and bootstrap Application |
-| `oke/namespaces.py` | The two namespaces GitOps writes into |
+| `oke/argocd.py` | Argo CD Helm release and the single bootstrap Application |
+| `oke/namespaces.py` | The three namespaces GitOps writes into |
 | `oke/wireguard.py` | Optional tunnel script for OKE nodes |
-| `gitops/bootstrap/` | Manifests synced by the bootstrap Application |
 
 ## Commands
 
@@ -85,9 +93,15 @@ uv run pytest -v
 - **Wireguard addresses are derived per node.** Both nodes run identical
   user-data, so a fixed address would collide. See `oke/wireguard.py`.
 - **`serviceAccountRef.namespace` is required** on a `ClusterSecretStore`. Without
-  it Workload Identity has no ServiceAccount to resolve.
+  it Workload Identity has no ServiceAccount to resolve. The ServiceAccount
+  itself is created by Pulumi, not by `argo-apps`, because the annotation's key
+  and value are both OCIDs this program produces. Templating it is what removed
+  the hand-edited manifest from the bootstrap.
 - **The OKE `DynamicGroup` lives in the tenancy root**, not in the configured
   compartment. IAM resources are tenancy-scoped.
+- **The chart version is pinned in two repositories.** `ARGOCD_HELM_VERSION` here
+  and `core-apps/argo-cd.yaml` in `argo-apps` describe one Helm release. They
+  must match, or handing over downgrades Argo CD under the running cluster.
 
 ## Neighbouring repositories
 

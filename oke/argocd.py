@@ -1,4 +1,18 @@
-"""Bootstrap Argo CD and the Argo CD repository credential.
+"""Install Argo CD and seed the single Application that starts GitOps.
+
+This module is deliberately the whole of Pulumi's involvement with Argo CD. It
+creates the namespace, the Helm release, an optional repository credential and
+one root ``Application``, and nothing else. Every further object, including Argo
+CD's own Helm release once it is handed over, belongs to the GitOps repository.
+
+Two things follow from that, and both are load-bearing:
+
+* The root Application uses the ``default`` project. Argo CD creates that project
+  itself, fully permissive, so a bootstrap needs no pre-created AppProject. Any
+  named project would have to exist before the Application that defines it.
+* The source is a directory, not a single file. The GitOps repository holds one
+  Application per category, and pointing at a file would mean hardcoding one of
+  them here.
 
 Argo CD is never exposed by this program. The release is a plain ClusterIP and
 the UI is reached with a port-forward against the generated kubeconfig.
@@ -94,6 +108,37 @@ def build_repository_secret_string_data(
     return None
 
 
+def bootstrap_application_spec(cfg):
+    """Build the spec of the one Application that hands over to GitOps.
+
+    Kept separate from the resource so its shape can be asserted in a unit test
+    without a Pulumi engine. The three properties that make the handover minimal
+    are all visible here: one project, one path, one directory.
+    """
+    return {
+        # `default` is the only project that exists at this point. Argo CD
+        # creates it permissive, and no named project could be referenced by
+        # the very Application that defines it.
+        "project": "default",
+        "source": {
+            "repoURL": cfg.argocd_repo_url,
+            "targetRevision": cfg.argocd_repo_target_revision,
+            "path": cfg.argocd_repo_path,
+            # The GitOps repo's entrypoint is a directory of Applications, one
+            # per category. Recursing is what makes that a single seed.
+            "directory": {"recurse": True},
+        },
+        "destination": {
+            "server": "https://kubernetes.default.svc",
+            "namespace": ARGOCD_NAMESPACE,
+        },
+        "syncPolicy": {
+            "automated": {"prune": True, "selfHeal": True},
+            "syncOptions": ["CreateNamespace=true"],
+        },
+    }
+
+
 def create_argocd(cfg, kubeconfig):
     """Install Argo CD and seed the bootstrap Application.
 
@@ -175,22 +220,7 @@ def create_argocd(cfg, kubeconfig):
         api_version="argoproj.io/v1alpha1",
         kind="Application",
         metadata={"name": "bootstrap-root", "namespace": ARGOCD_NAMESPACE},
-        spec={
-            "project": "default",
-            "source": {
-                "repoURL": cfg.argocd_repo_url,
-                "targetRevision": cfg.argocd_repo_target_revision,
-                "path": cfg.argocd_repo_path,
-            },
-            "destination": {
-                "server": "https://kubernetes.default.svc",
-                "namespace": ARGOCD_NAMESPACE,
-            },
-            "syncPolicy": {
-                "automated": {"prune": True, "selfHeal": True},
-                "syncOptions": ["CreateNamespace=true"],
-            },
-        },
+        spec=bootstrap_application_spec(cfg),
         opts=pulumi.ResourceOptions(
             provider=provider, depends_on=root_dependencies or [argocd_namespace]
         ),

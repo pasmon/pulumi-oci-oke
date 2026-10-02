@@ -55,7 +55,27 @@ admin_kubeconfig.content.apply(kubeconfig.write_kubeconfig)
 # have somewhere to land, whichever Application syncs first.
 created_namespaces = namespaces.create_namespaces(
     admin_kubeconfig.content,
-    [namespaces.CERT_MANAGER_NAMESPACE, namespaces.MONITORING_NAMESPACE],
+    [
+        namespaces.CERT_MANAGER_NAMESPACE,
+        namespaces.MONITORING_NAMESPACE,
+        # Needed before the ServiceAccount below, which cannot be created in a
+        # namespace that does not exist.
+        namespaces.ESO_NAMESPACE,
+    ],
+)
+
+# --------------------------------------------------------------------------- #
+# External Secrets ServiceAccount
+# --------------------------------------------------------------------------- #
+# The Workload Identity annotation needs two OCIDs this program produces: the
+# dynamic group's and the cluster's. Templating the ServiceAccount here is what
+# removes the hand-edited manifest from the bootstrap flow, leaving the OCI
+# console policy attachment as the only manual step.
+eso_service_account = identity.create_eso_service_account(
+    cfg,
+    admin_kubeconfig.content,
+    cluster_id=oke["cluster"].id,
+    dynamic_group=oke_dynamic_group,
 )
 
 # --------------------------------------------------------------------------- #
@@ -93,18 +113,21 @@ pulumi.export("node_total_memory_gbs", cfg.node_total_memory_gbs)
 pulumi.export("argocd_namespace", argocd.ARGOCD_NAMESPACE)
 pulumi.export("argocd_managed_by_pulumi", cfg.argocd_managed_by_pulumi)
 pulumi.export("argocd_bootstrap_application", "bootstrap-root")
+# The path Pulumi seeds, so the operator can confirm the hand-over target
+# without reading the program.
+pulumi.export("argocd_bootstrap_path", cfg.argocd_repo_path)
+pulumi.export("argocd_bootstrap_repo_url", cfg.argocd_repo_url)
 
 pulumi.export("created_namespaces", sorted(created_namespaces.keys()))
 
-# Workload Identity enrollment inputs. These are identifiers, not credentials.
+# Workload Identity. The identifiers are exported so the console step in the
+# README can be completed without reading the program's output by other means.
 pulumi.export(
     "oke_dynamic_group_id", oke_dynamic_group.id if oke_dynamic_group else None
 )
 pulumi.export("eso_service_account_namespace", cfg.eso_service_account_namespace)
 pulumi.export("eso_service_account_name", cfg.eso_service_account_name)
-pulumi.export(
-    "eso_dynamic_group_annotation_prefix", identity.DYNAMIC_GROUP_ANNOTATION_PREFIX
-)
+pulumi.export("eso_service_account_created", eso_service_account is not None)
 
 pulumi.export("wireguard_enabled", cfg.wireguard_enabled)
 if cfg.wireguard_enabled:

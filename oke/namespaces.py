@@ -23,8 +23,12 @@ CERT_MANAGER_NAMESPACE = "cert-manager"
 # here, and the k8s-monitoring chart references the Secret by this name.
 MONITORING_NAMESPACE = "monitoring"
 
-# The namespace argo-apps deploys the radio workloads into.
-RADIO_NAMESPACE = "radio"
+# Where the ESO ServiceAccount carrying the Workload Identity annotation lives.
+# It is created here rather than by argo-apps because the annotation's key and
+# value are both OCIDs that this program produces, and because the ServiceAccount
+# has to exist before any Application that references it. Config carries the
+# name so the two cannot drift; see Config.eso_service_account_namespace.
+ESO_NAMESPACE = "external-secrets"
 
 
 def create_namespaces(kubeconfig, namespaces):
