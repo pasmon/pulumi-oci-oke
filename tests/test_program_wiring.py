@@ -10,10 +10,21 @@ import inspect
 import os
 
 import pytest
-import yaml
 
-from oke import argocd, kubeconfig, wireguard
-from tests.conftest import BASE_STACK_CONFIG, REPO_ROOT, load_stack, unload_stack
+from oke import argocd, identity, kubeconfig, wireguard
+from tests.conftest import (
+    BASE_STACK_CONFIG,
+    REPO_ROOT,
+    build_config,
+    load_stack,
+    unload_stack,
+)
+
+# A validated config for the pure-function assertions. No Pulumi engine and no
+# OCI access, so these run even where the mocked stack cannot be loaded.
+BASE_CONFIG = build_config()
+
+CLUSTER = "ocid1.cluster.oc1.eu-stockholm-1.testcluster000000000000000000"
 
 
 class TestProgramLoads:
@@ -36,8 +47,12 @@ class TestProgramLoads:
         ):
             assert network[key] is not None, f"missing {key}"
 
-    def test_both_namespaces_are_created(self, pulumi_stack):
-        assert set(pulumi_stack.created_namespaces) == {"cert-manager", "monitoring"}
+    def test_the_three_namespaces_are_created(self, pulumi_stack):
+        assert set(pulumi_stack.created_namespaces) == {
+            "cert-manager",
+            "monitoring",
+            "external-secrets",
+        }
 
     def test_kubeconfig_is_written(self, tmp_path, monkeypatch):
         # The .apply() callback only runs when the output resolves, which the
@@ -109,58 +124,44 @@ class TestArgoCdExposure:
         assert "HTTPRoute" not in source
 
 
-class TestGitopsManifests:
-    """The bootstrap manifests ship in this repo and are internally consistent.
+class TestGitopsHandover:
+    """Pulumi's entire Argo CD footprint is one Application.
 
-    These read files rather than mock resources, so they need no fixture.
+    The bootstrap is minimal by construction, so these assert on the absence of
+    things rather than the presence of a manifest tree. A reintroduced
+    intermediate Application or a second repository entrypoint is exactly the
+    regression this guards against.
     """
 
-    def _read(self, name):
-        with open(
-            os.path.join(REPO_ROOT, "gitops", "bootstrap", name), encoding="utf-8"
-        ) as handle:
-            return handle.read()
+    def test_no_gitops_manifest_tree_ships(self):
+        # Everything after the release lives in argo-apps, so there is no
+        # bootstrap directory to drift out of step with it.
+        assert not os.path.exists(os.path.join(REPO_ROOT, "gitops"))
 
-    def test_bootstrap_project_allows_both_repositories(self):
-        content = self._read("bootstrap-project.yaml")
-        assert "https://github.com/pasmon/argo-apps.git" in content
-        assert "https://github.com/pasmon/pulumi-oci-oke.git" in content
-        assert "https://argoproj.github.io/argo-helm" in content
+    def test_source_is_a_recursive_directory(self):
+        # A single file here would hardcode one category instead of letting
+        # argo-apps declare its own entrypoint.
+        spec = argocd.bootstrap_application_spec(BASE_CONFIG)
+        assert spec["source"]["directory"] == {"recurse": True}
 
-    def test_bootstrap_project_allows_cluster_resources(self):
-        content = self._read("bootstrap-project.yaml")
-        assert "clusterResourceWhitelist" in content
+    def test_uses_the_default_project(self):
+        # `bootstrap` cannot be used: it would have to be created by the very
+        # Application that references it. Argo CD's own default project is
+        # created permissive, so it is the only one available at this point.
+        spec = argocd.bootstrap_application_spec(BASE_CONFIG)
+        assert spec["project"] == "default"
 
-    def test_argocd_self_starts_unmanaged(self):
-        content = self._read("argocd-self-application.yaml")
-        document = yaml.safe_load(content)
-        # Automation is genuinely off, not merely mentioned in a comment.
-        assert "automated" not in document["spec"]["syncPolicy"]
-        assert "argocd-managed-by-pulumi" in content
+    def test_handover_is_automated(self):
+        spec = argocd.bootstrap_application_spec(BASE_CONFIG)
+        assert spec["syncPolicy"]["automated"] == {"prune": True, "selfHeal": True}
 
-    def test_platform_app_of_apps_is_automated(self):
-        content = self._read("argo-apps-application.yaml")
-        assert "prune: true" in content
-        assert "selfHeal: true" in content
-        assert "path: app-of-apps" in content
-
-    def test_workload_identity_manifest_is_cluster_specific(self):
-        content = self._read("cluster-external-secrets.yaml")
-        assert "ClusterSecretStore" in content
-        assert "principalType: Workload" in content
-        # serviceAccountRef.namespace is required on a cluster-scoped store.
-        assert "namespace: external-secrets" in content
-        # Left as a placeholder for the operator to fill in.
-        assert "TODO_VAULT_OCID" in content
-
-    def test_workload_identity_manifest_carries_no_credential(self):
-        content = self._read("cluster-external-secrets.yaml")
-        assert "BEGIN " not in content
-        assert "apiToken" not in content
+    def test_destination_is_the_argocd_namespace(self):
+        spec = argocd.bootstrap_application_spec(BASE_CONFIG)
+        assert spec["destination"]["namespace"] == argocd.ARGOCD_NAMESPACE
 
 
 class TestHandoffFlag:
-    """Disabling the flag removes the release so argocd-self can take over."""
+    """Disabling the flag removes the release so Argo CD can adopt it."""
 
     def test_release_is_absent_when_not_managed_by_pulumi(self):
         program = load_stack({**BASE_STACK_CONFIG, "argocd-managed-by-pulumi": "false"})
@@ -173,13 +174,27 @@ class TestHandoffFlag:
 
 
 class TestWorkloadIdentity:
-    """The dynamic group appears only when a tenancy is configured."""
+    """The dynamic group and ServiceAccount appear only with a tenancy."""
 
     def test_absent_without_a_tenancy(self, pulumi_stack):
         assert pulumi_stack.oke_dynamic_group is None
+        assert (
+            identity.create_eso_service_account(
+                pulumi_stack.cfg, "kubeconfig", CLUSTER, None
+            )
+            is None
+        )
 
     def test_created_with_a_tenancy(self, identity_stack):
         assert identity_stack.oke_dynamic_group is not None
+        assert identity_stack.eso_service_account is not None
+
+    def test_created_before_the_argo_cd_bootstrap(self, identity_stack):
+        # The annotation is templated from two OCIDs this program produces, so
+        # the ServiceAccount has to be wired before the hand-over rather than
+        # delivered as a manifest the operator fills in afterwards.
+        assert identity_stack.eso_service_account is not None
+        assert identity_stack.argocd_resources["bootstrap_application"] is not None
 
 
 class TestNodeMetadata:

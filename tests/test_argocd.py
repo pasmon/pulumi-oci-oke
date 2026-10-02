@@ -4,18 +4,24 @@ import pytest
 
 from oke import argocd
 
-HTTPS_URL = "https://github.com/pasmon/pulumi-oci-oke.git"
-SSH_URL = "ssh://git@github.com/pasmon/pulumi-oci-oke.git"
+HTTPS_URL = "https://github.com/pasmon/argo-apps.git"
+SSH_URL = "ssh://git@github.com/pasmon/argo-apps.git"
 
 
 class TestChartConstants:
-    """Pinned chart coordinates match the gitops manifests."""
+    """Pinned chart coordinates, which argo-apps must agree with.
+
+    Two Applications describing the same release is the hazard here, so the
+    version is pinned in one place and asserted rather than documented. The
+    argo-apps self-management Application has to match this value, or adopting
+    the release downgrades Argo CD underneath the running cluster.
+    """
 
     def test_chart_and_version(self):
         assert argocd.ARGOCD_HELM_CHART == "argo-cd"
         assert argocd.ARGOCD_HELM_VERSION == "8.3.3"
 
-    def test_repo_matches_the_argocd_self_application(self):
+    def test_repo_is_the_upstream_chart_repository(self):
         assert argocd.ARGOCD_HELM_REPO == "https://argoproj.github.io/argo-helm"
 
     def test_namespace(self):
@@ -80,7 +86,7 @@ class TestSshAuthentication:
 
     def test_scp_style_url_is_recognised(self):
         result = argocd.build_repository_secret_string_data(
-            "git@github.com:pasmon/pulumi-oci-oke.git", repo_ssh_private_key="key"
+            "git@github.com:pasmon/argo-apps.git", repo_ssh_private_key="key"
         )
         assert result["type"] == "git"
 

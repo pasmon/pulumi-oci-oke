@@ -105,9 +105,7 @@ class Config:
         self.argocd_repo_target_revision = (
             self.config.get("argocd-repo-target-revision") or "main"
         )
-        self.argocd_repo_path = (
-            self.config.get("argocd-repo-path") or "gitops/bootstrap"
-        )
+        self.argocd_repo_path = self.config.get("argocd-repo-path") or "app-of-apps"
         self.argocd_repo_username = self.config.get("argocd-repo-username")
         self.argocd_repo_password = self.config.get_secret("argocd-repo-password")
         self.argocd_repo_ssh_private_key = self.config.get_secret(
@@ -124,14 +122,13 @@ class Config:
             str(self.config.get("argocd-managed-by-pulumi") or "true").lower() == "true"
         )
 
-        # TLS. The Cloudflare token itself lives in OCI Vault and is synced by
-        # External Secrets Operator; these two values are not credentials.
-        self.tls_domain = self.config.get("tls-domain")
-        self.cloudflare_email = self.config.get("cloudflare-email")
-
-        # Workload identity (identifiers only, never credential material)
+        # Workload identity. The tenancy OCID is the only identifier needed: it
+        # scopes the dynamic group, and the vault the ESO ServiceAccount reads
+        # from is named in the GitOps repository's ClusterSecretStore. There is
+        # deliberately no vault OCID here, because nothing in this program reads
+        # the vault and a config key nothing consumes is a place for a stale
+        # value to hide.
         self.tenancy_id = self.config.get("tenancy-id")
-        self.vault_id = self.config.get("vault-id")
         self.eso_service_account_name = (
             self.config.get("eso-service-account-name") or "external-secrets"
         )
@@ -193,7 +190,6 @@ class Config:
         self._validate_cidrs()
         self._validate_nodes()
         self._validate_wireguard()
-        self._validate_tls()
         self._validate_ocids()
 
     def _validate_cidrs(self):
@@ -361,13 +357,6 @@ class Config:
                     f"Invalid wireguard-allowed-cidrs entry {cidr!r}: {error}"
                 ) from error
 
-    def _validate_tls(self):
-        """Require the TLS domain and ACME email together."""
-        if bool(self.tls_domain) != bool(self.cloudflare_email):
-            raise ValueError(
-                "Set tls-domain and cloudflare-email together, or omit them both."
-            )
-
     def _validate_ocids(self):
         """Reject values that are not shaped like OCIDs.
 
@@ -378,5 +367,3 @@ class Config:
             raise ValueError(
                 f"tenancy-id {self.tenancy_id!r} does not look like an OCID"
             )
-        if self.vault_id is not None and not OCID_PATTERN.match(self.vault_id):
-            raise ValueError(f"vault-id {self.vault_id!r} does not look like an OCID")

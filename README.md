@@ -110,25 +110,28 @@ pulumi config set node-ocpus 2
 pulumi config set node-memory-gbs 12
 pulumi config set boot-volume-size-gbs 50
 
-# Argo CD and GitOps
-pulumi config set argocd-repo-url pasmon/pulumi-oci-oke
+# The GitOps repository Argo CD is handed over to. Pulumi seeds exactly one
+# Application at this path; everything else comes from there.
+pulumi config set argocd-repo-url https://github.com/pasmon/argo-apps.git
 pulumi config set argocd-repo-target-revision main
-pulumi config set argocd-repo-path gitops/bootstrap
+pulumi config set argocd-repo-path app-of-apps
+
 # For a private remote, exactly one of:
 pulumi config set argocd-repo-username <user>
 pulumi config set --secret argocd-repo-password <token>
-pulumi config set argocd-managed-by-pulumi true
+# or
+pulumi config set --secret argocd-repo-ssh-private-key @<path to SSH key>
 
-# TLS. The token itself lives in OCI Vault, never in this config.
-pulumi config set tls-domain radio.example.com
-pulumi config set cloudflare-email you@example.com
-
-# Workload Identity. Identifiers only, never credentials.
+# Workload Identity. The tenancy OCID is the only identifier needed; Pulumi
+# templates the ServiceAccount annotation from it and the cluster OCID.
 pulumi config set tenancy-id ocid1.tenancy.oc1..<tenancy>
-pulumi config set vault-id ocid1.vault.oc1.<region>.ocid1..
-pulumi config set eso-service-account-name external-secrets
-pulumi config set eso-service-account-namespace external-secrets
 ```
+
+Use the full `https://…git` URL rather than a `owner/repo` shorthand. Pulumi
+writes that string verbatim into the repository Secret's `url` field, and Argo CD
+matches credentials against the exact URL its Application requests, so a
+shorthand produces a Secret that does not apply to the Application it was meant
+to authenticate.
 
 Deploy:
 
@@ -158,45 +161,51 @@ Then open <http://localhost:8080>.
 
 **No application secret is ever created by Pulumi.** Credentials live in OCI
 Vault and reach the cluster through External Secrets Operator, authenticated by
-OKE Workload Identity. Pulumi creates only the `cert-manager` and `monitoring`
-namespaces so the synced Secrets have somewhere to land.
+OKE Workload Identity. Pulumi creates only the `cert-manager`, `monitoring` and
+`external-secrets` namespaces so the synced Secrets have somewhere to land, and
+the one `ServiceAccount` ESO authenticates as.
 
-Create these in OCI Vault before enrolling Workload Identity:
+Create these in OCI Vault before enrolling Workload Identity. `argo-apps`
+documents the full list; these two are needed for the certificate and monitoring
+to come up:
 
 | Vault secret | Keys | Consumer |
 |---|---|---|
 | `radio-cloudflare-dns01` | `apiToken` | cert-manager Cloudflare dns-01 solver |
 | `radio-grafana-cloud` | `username`, `password` | `k8s-monitoring` destination auth |
 
+Each holds a JSON object, so a `remoteRef` that omits `property` receives the
+whole document rather than the credential.
+
 ### Enrolling Workload Identity
 
-This is the one manual step, and it cannot be automated: a Workload Identity
+Exactly one manual step remains, and it cannot be automated: a Workload Identity
 policy can only be assigned by a dynamic group, and Pulumi cannot mint OKE
 service-account tokens. Budget about ten minutes.
 
 1. Create the Vault secrets above in the OCI console.
-2. Create an OKE cluster API key and a `DynamicGroup` matching ESO's ServiceAccount:
-
-   ```
-   spiffe://<cluster-ocid>/ns/external-secrets/sa/external-secrets
-   ```
-
-3. `pulumi up` creates the cluster `OKE` dynamic group. Read its id:
+2. `pulumi up` creates the cluster `OKE` dynamic group and the `external-secrets`
+   `ServiceAccount`, with the OKE annotation already templated from the dynamic
+   group OCID and the cluster OCID. Read the group id:
 
    ```bash
    pulumi stack output oke_dynamic_group_id
    ```
 
-4. Attach your API-key dynamic group to that dynamic group in the console. This
-   is the step that cannot be scripted.
-5. Fill in the placeholders in `gitops/bootstrap/cluster-external-secrets.yaml`
-   and commit. Use the annotation prefix from
-   `pulumi stack output eso_dynamic_group_annotation_prefix`.
+3. Create an OKE cluster API key and a `DynamicGroup` whose matching rule is the
+   `ServiceAccount`'s SPIFFE ID. OKE issues the token, so the rule has to name
+   it exactly:
 
-After that, Argo CD syncs the `ClusterSecretStore` and the `ExternalSecret`
-objects from `argo-apps`, and all three credentials appear in-cluster.
+   ```
+   ALL {any.subject.name == 'spiffe://<cluster-ocid>/ns/external-secrets/sa/external-secrets'}
+   ```
 
-Verify:
+4. Attach your API-key dynamic group to the Pulumi-created one in the console.
+   This is the step that cannot be scripted.
+
+The `ClusterSecretStore` and the `ExternalSecret` objects are synced from
+`argo-apps` and reference the `ServiceAccount` by name, so nothing in that
+repository has to name an OCID. Verify:
 
 ```bash
 kubectl get clustersecretstore oci-vault     # expect Ready: True
@@ -205,11 +214,24 @@ kubectl get externalsecrets -A               # expect SecretSynced
 
 ## Argo CD self-management
 
-Pulumi installs Argo CD and seeds a `bootstrap-root` Application pointing at
-`gitops/bootstrap/`. From there Argo CD takes over and syncs
-`argo-apps` on its own. Nothing else needs running.
+Pulumi's entire involvement with Argo CD is four resources: the `argocd`
+namespace, the Helm release, an optional repository credential, and one
+`Application` named `bootstrap-root`. That Application points at
+`argocd-repo-path` in the GitOps repository with `directory: recurse`, so the
+repository declares its own entrypoint rather than this program hardcoding a
+file. Everything after that, **including Argo CD itself**, is `argo-apps`.
 
-Argo CD cannot own itself while Pulumi also owns the release, so the handoff is
+Two consequences worth knowing:
+
+- The bootstrap Application uses the `default` project. Argo CD creates that
+  project itself, permissive, so a hand-over needs no AppProject to exist first.
+  A named project would have to be created by the very Application that
+  references it.
+- There is no `gitops/` directory in this repository any more. If one reappears,
+  something has reintroduced an intermediate step between the release and
+  `argo-apps`, and `tests/test_program_wiring.py` will fail.
+
+Argo CD cannot own itself while Pulumi also owns the release, so the hand-off is
 explicit:
 
 ```bash
@@ -217,19 +239,13 @@ pulumi config set argocd-managed-by-pulumi false
 pulumi up                                    # destroys the Helm release
 ```
 
-Then add automation to `argocd-self` in `gitops/bootstrap/argocd-self-application.yaml`:
+`argo-apps/core-apps/argo-cd.yaml` then owns it, already configured with
+`automated: {prune: true, selfHeal: true}`. It pins the same chart version this
+program installs; the two must be changed together or adopting the release
+downgrades Argo CD under the running cluster.
 
-```yaml
-syncPolicy:
-  automated:
-    prune: true
-    selfHeal: true
-  syncOptions:
-    - CreateNamespace=true
-```
-
-Commit. `bootstrap-root`, the namespaces and any repository Secret survive,
-because none of them are release-owned resources.
+`bootstrap-root`, the namespaces and any repository Secret survive, because none
+of them are release-owned resources.
 
 ## What Pulumi owns, and what Argo CD owns
 
@@ -241,9 +257,10 @@ depending on a CRD that Argo CD installs lives in `argo-apps`.
 | VCN, gateway, route table, 2 subnets, 2 security lists | `radio` namespace |
 | OKE cluster and node pool | `EnvoyProxy`, `GatewayClass`, `public-gateway` |
 | OKE `DynamicGroup` for Workload Identity | `ClusterSecretStore` and `ExternalSecret`s |
-| `out/oke_kubeconfig` | `ClusterIssuer`, `Certificate` |
-| `argocd` namespace, Helm release, optional repository Secret | `radio-audio-cache` PVC |
-| `cert-manager` and `monitoring` namespaces | `k8s-monitoring` |
+| the ESO `ServiceAccount` and its OKE annotation | `ClusterIssuer`, `Certificate` |
+| `out/oke_kubeconfig` | `radio-audio-cache` PVC |
+| `argocd` namespace, Helm release, optional repository Secret | `k8s-monitoring` |
+| `cert-manager`, `monitoring`, `external-secrets` namespaces | Argo CD's own Helm release |
 | `bootstrap-root` Application | |
 
 The reason for the split is that Pulumi cannot create anything whose CRD Argo CD
@@ -367,12 +384,15 @@ needed and nothing is created.
 | `oke/config.py` | Configuration loading and validation |
 | `oke/networking.py` | VCN, gateway, route table, security lists, subnets |
 | `oke/cluster.py` | AD and image discovery, cluster, node pool |
-| `oke/identity.py` | OKE `DynamicGroup` for Workload Identity |
+| `oke/identity.py` | OKE `DynamicGroup` and the ESO `ServiceAccount` |
 | `oke/kubeconfig.py` | Fetches and writes `out/oke_kubeconfig` |
-| `oke/argocd.py` | Argo CD release and bootstrap Application |
-| `oke/namespaces.py` | The two namespaces GitOps writes into |
+| `oke/argocd.py` | Argo CD release and the single bootstrap Application |
+| `oke/namespaces.py` | The three namespaces GitOps writes into |
 | `oke/wireguard.py` | Optional tunnel script |
-| `gitops/bootstrap/` | Synced by the bootstrap Application |
+
+There is no `gitops/` directory. This repository ships manifests to Kubernetes
+nowhere; `argo-apps` is the only GitOps tree, which is what makes the hand-over
+a single Application rather than a chain.
 
 ## Reference
 

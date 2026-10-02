@@ -54,7 +54,8 @@ class FakeConfig:
 BASE_VALUES = {
     "compartment-id": "ocid1.compartment.oc1..test",
     "ssh-public-key-path": "unused-in-tests",
-    "argocd-repo-url": "https://github.com/pasmon/pulumi-oci-oke.git",
+    # The hand-over target is the GitOps repository, not this one.
+    "argocd-repo-url": "https://github.com/pasmon/argo-apps.git",
 }
 
 
@@ -158,7 +159,7 @@ class StackMocks(pulumi.runtime.Mocks):
 # banner. The overage path is covered directly in test_config.py instead.
 BASE_STACK_CONFIG = {
     "compartment-id": "ocid1.tenancy.oc1..testtenancy0000000000000000000000000000000",
-    "argocd-repo-url": "https://github.com/pasmon/pulumi-oci-oke.git",
+    "argocd-repo-url": "https://github.com/pasmon/argo-apps.git",
     "node-count": "2",
     "node-ocpus": "1",
     "node-memory-gbs": "6",
@@ -174,7 +175,6 @@ WIREGUARD_STACK_CONFIG = {
 
 IDENTITY_STACK_CONFIG = {
     "tenancy-id": "ocid1.tenancy.oc1..testtenancy0000000000000000000000000000000",
-    "vault-id": "ocid1.vault.oc1.eu-stockholm-1.aaaaaaaaexample",
 }
 
 
