@@ -120,7 +120,18 @@ pulumi config set argocd-repo-path app-of-apps
 pulumi config set argocd-repo-username <user>
 pulumi config set --secret argocd-repo-password <token>
 # or
-pulumi config set --secret argocd-repo-ssh-private-key @<path to SSH key>
+cat ~/.ssh/id_ed25519 | pulumi config set --secret argocd-repo-ssh-private-key
+# or a GitHub App, as a token with no expiry to revoke:
+pulumi config set argocd-github-app-id <app id>
+pulumi config set argocd-github-app-installation-id <installation id>
+cat my-app.private-key.pem | pulumi config set --secret argocd-github-app-private-key
+
+# Private keys and PEMs are multi-line, so they have to be piped in on stdin.
+# The `@<path>` form that earlier revisions of this file suggested is not a
+# Pulumi feature: `pulumi config set x @key.pem` stores the literal string
+# "@key.pem" and exits 0, so the breakage is silent. Passing the key as an
+# argument does not work either, because a PEM's second line starts with
+# "-----" and the CLI reads it as a flag. Only the pipe works.
 
 # Workload Identity. The tenancy OCID is the only identifier needed; Pulumi
 # templates the ServiceAccount annotation from it and the cluster OCID.
@@ -132,6 +143,13 @@ writes that string verbatim into the repository Secret's `url` field, and Argo C
 matches credentials against the exact URL its Application requests, so a
 shorthand produces a Secret that does not apply to the Application it was meant
 to authenticate.
+
+The GitHub App needs `Contents: read` on the repository and must be installed on
+it. All three `argocd-github-app-*` values have to be set together; setting one
+or two of them fails at `pulumi preview` rather than half-configuring Argo CD.
+Once the Argo CD release is handed over to `argo-apps`, the repository Secret
+Pulumi created is left alone — `argo-apps` does not redeclare it, so it keeps
+authenticating the seed Application.
 
 Deploy:
 
