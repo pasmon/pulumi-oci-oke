@@ -280,13 +280,24 @@ explicit:
 
 ```bash
 pulumi config set argocd-managed-by-pulumi false
-pulumi up                                    # destroys the Helm release
+pulumi up                        # stops tracking the release; deletes nothing
 ```
 
-`argo-apps/core-apps/argo-cd.yaml` then owns it, already configured with
+The release is created with `retain_on_delete`, so this `pulumi up` makes Pulumi
+forget the release rather than deleting it. Nothing in the cluster changes and
+there is no interruption. `argo-apps/core-apps/argo-cd.yaml` then owns the
+already-running release, configured with
 `automated: {prune: true, selfHeal: true}`. It pins the same chart version this
 program installs; the two must be changed together or adopting the release
 downgrades Argo CD under the running cluster.
+
+Do not remove `retain_on_delete` to "tidy up". Deleting the resource instead
+means `helm uninstall` against a live cluster, which takes Argo CD's ConfigMaps,
+Secrets and ServiceAccounts with it. Argo CD cannot recover from that on its own:
+the application controller reads `argocd-cm` while starting up and exits fatally
+when it is missing, and it has lost the ServiceAccount it would need to recreate
+anything. Every Application then sits at `Unknown` until the objects are
+restored by hand. `pulumi destroy` is unaffected and still removes everything.
 
 `bootstrap-root`, the namespaces and any repository Secret survive, because none
 of them are release-owned resources.

@@ -168,7 +168,14 @@ class TestGitopsHandover:
 
 
 class TestHandoffFlag:
-    """Disabling the flag removes the release so Argo CD can adopt it."""
+    """Disabling the flag stops Pulumi tracking the release, without deleting it.
+
+    Deleting it instead uninstalls the Helm release under a running Argo CD,
+    which removes the ConfigMaps, Secrets and ServiceAccounts that Argo CD needs
+    in order to reconcile at all. Asserted rather than documented because the
+    failure is a dead cluster that Argo CD cannot recover from unaided, and
+    nothing in a preview shows it coming.
+    """
 
     def test_release_is_absent_when_not_managed_by_pulumi(self):
         program = load_stack({**BASE_STACK_CONFIG, "argocd-managed-by-pulumi": "false"})
@@ -178,6 +185,32 @@ class TestHandoffFlag:
             assert program.argocd_resources["bootstrap_application"] is not None
         finally:
             unload_stack(program)
+
+    def test_release_is_retained_on_delete_when_it_is_created(self):
+        """The release must survive being dropped from the program.
+
+        Without this, flipping the flag runs `helm uninstall` against the live
+        cluster. Asserted on the call rather than on the resulting resource,
+        because the mocked stack resolves a Release to an output bag and the
+        retain flag is an input to the create call, not an output of it.
+        """
+        recorded = {}
+        real_release = argocd.k8s.helm.v3.Release
+
+        def spy(*args, **kwargs):
+            recorded["opts"] = kwargs.get("opts")
+            return real_release(*args, **kwargs)
+
+        argocd.k8s.helm.v3.Release = spy
+        program = None
+        try:
+            program = load_stack(BASE_STACK_CONFIG)
+        finally:
+            argocd.k8s.helm.v3.Release = real_release
+            if program is not None:
+                unload_stack(program)
+
+        assert recorded["opts"].retain_on_delete is True
 
 
 class TestVaultAccess:

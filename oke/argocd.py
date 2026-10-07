@@ -177,8 +177,27 @@ def create_argocd(cfg, kubeconfig):
                 # Deliberately ClusterIP. The UI is reached by port-forward.
                 "server": {"service": {"type": "ClusterIP"}},
             },
+            # retain_on_delete is what makes the hand-over clean. Setting
+            # argocd-managed-by-pulumi to false drops this resource from the
+            # program, and without this flag Pulumi would delete it, which for a
+            # Helm release means running `helm uninstall` against a live
+            # cluster. Uninstalling Argo CD's own release takes its ConfigMaps,
+            # Secrets and ServiceAccounts with it, and Argo CD cannot recreate
+            # them on its own: the application controller reads argocd-cm during
+            # startup and exits fatally when it is missing, and it loses the
+            # ServiceAccount it would use to recreate anything. The cluster
+            # dead-ends with every Application stuck at Unknown until the
+            # objects are recreated by hand.
+            #
+            # With retain_on_delete the release is simply forgotten. Pulumi stops
+            # tracking it, the running release is untouched, and
+            # argo-apps/core-apps/argo-cd.yaml adopts the live objects on its
+            # next sync, which is what the hand-over is actually for. A full
+            # `pulumi destroy` still removes the cluster and everything in it.
             opts=pulumi.ResourceOptions(
-                provider=provider, depends_on=[argocd_namespace]
+                provider=provider,
+                depends_on=[argocd_namespace],
+                retain_on_delete=True,
             ),
         )
 
