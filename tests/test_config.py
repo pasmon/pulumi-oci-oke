@@ -222,10 +222,27 @@ class TestOcidValidation:
             build_config(tenancy_id="not-an-ocid")
 
     def test_well_formed_tenancy_is_accepted(self):
+        # tenancy-id and vault-id go together: the policy is created in the
+        # tenancy and scoped to the vault, so neither half works alone.
         cfg = build_config(
-            tenancy_id="ocid1.tenancy.oc1..testtenancy0000000000000000000000000000000"
+            tenancy_id="ocid1.tenancy.oc1..testtenancy0000000000000000000000000000000",
+            vault_id="ocid1.vault.oc1.eu-stockholm-1.testvault000000000000000000000",
         )
         assert cfg.tenancy_id.startswith("ocid1.tenancy.oc1..")
+
+    def test_malformed_vault_is_rejected(self):
+        with pytest.raises(ValueError, match="vault-id .* does not look like an OCID"):
+            build_config(
+                tenancy_id="ocid1.tenancy.oc1..testtenancy0000000000000000000000000000000",
+                vault_id="not-an-ocid",
+            )
+
+    def test_well_formed_vault_is_accepted(self):
+        cfg = build_config(
+            tenancy_id="ocid1.tenancy.oc1..testtenancy0000000000000000000000000000000",
+            vault_id="ocid1.vault.oc1.eu-stockholm-1.testvault000000000000000000000",
+        )
+        assert cfg.vault_id.startswith("ocid1.vault.oc1.")
 
 
 class TestRemovedConfigKeys:
@@ -243,15 +260,16 @@ class TestRemovedConfigKeys:
         assert not hasattr(cfg, "tls_domain")
         assert not hasattr(cfg, "cloudflare_email")
 
-    def test_vault_id_is_not_loaded(self):
-        # The vault is named in argo-apps' ClusterSecretStore, which is the only
-        # place that reads it. Nothing in this program touches the vault.
-        cfg = build_config(vault_id="ocid1.vault.oc1.eu-stockholm-1.aaaaaaaaexample")
-        assert not hasattr(cfg, "vault_id")
-
     def test_source_declares_no_removed_key(self):
         source = inspect.getsource(Config)
-        for key in ("tls-domain", "cloudflare-email", "vault-id"):
+        for key in ("tls-domain", "cloudflare-email"):
+            assert f'"{key}"' not in source
+
+    def test_eso_service_account_keys_are_gone(self):
+        # Instance principals need no Kubernetes ServiceAccount, so the keys that
+        # named one are removed rather than left unread.
+        source = inspect.getsource(Config)
+        for key in ("eso-service-account-name", "eso-service-account-namespace"):
             assert f'"{key}"' not in source
 
 

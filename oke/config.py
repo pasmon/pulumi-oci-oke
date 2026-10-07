@@ -127,19 +127,13 @@ class Config:
             str(self.config.get("argocd-managed-by-pulumi") or "true").lower() == "true"
         )
 
-        # Workload identity. The tenancy OCID is the only identifier needed: it
-        # scopes the dynamic group, and the vault the ESO ServiceAccount reads
-        # from is named in the GitOps repository's ClusterSecretStore. There is
-        # deliberately no vault OCID here, because nothing in this program reads
-        # the vault and a config key nothing consumes is a place for a stale
-        # value to hide.
+        # Vault access for External Secrets Operator. ESO authenticates as an
+        # instance principal, so this program needs the tenancy to own the IAM
+        # policy and the vault the policy is scoped to. The policy is optional:
+        # without it ESO has no access and the ClusterSecretStore stays NotReady,
+        # which is a legitimate state before the vault exists.
         self.tenancy_id = self.config.get("tenancy-id")
-        self.eso_service_account_name = (
-            self.config.get("eso-service-account-name") or "external-secrets"
-        )
-        self.eso_service_account_namespace = (
-            self.config.get("eso-service-account-namespace") or "external-secrets"
-        )
+        self.vault_id = self.config.get("vault-id")
 
         # Wireguard
         self.wireguard_peer_endpoint = self.config.get("wireguard-peer-endpoint")
@@ -370,10 +364,16 @@ class Config:
     def _validate_ocids(self):
         """Reject values that are not shaped like OCIDs.
 
-        A wrong tenancy here produces an opaque OCI policy-assignment failure
-        much later, so it is worth catching at preview time.
+        A wrong tenancy or vault here produces an opaque OCI policy failure much
+        later, so it is worth catching at preview time.
         """
-        if self.tenancy_id is not None and not OCID_PATTERN.match(self.tenancy_id):
-            raise ValueError(
-                f"tenancy-id {self.tenancy_id!r} does not look like an OCID"
-            )
+        for name in ("tenancy-id", "vault-id"):
+            value = getattr(self, name.replace("-", "_"))
+            if value is not None and not OCID_PATTERN.match(value):
+                raise ValueError(f"{name} {value!r} does not look like an OCID")
+
+        # The policy is created in the tenancy root and scoped to the vault, so
+        # neither half works alone.
+        if (self.tenancy_id is None) != (self.vault_id is None):
+            missing = "vault-id" if self.vault_id is None else "tenancy-id"
+            raise ValueError(f"Set {missing} together with tenancy-id and vault-id")

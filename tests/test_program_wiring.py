@@ -13,7 +13,7 @@ import os
 import pulumi
 import pytest
 
-from oke import argocd, identity, kubeconfig, wireguard
+from oke import argocd, kubeconfig, wireguard
 from tests.conftest import (
     BASE_STACK_CONFIG,
     REPO_ROOT,
@@ -25,8 +25,6 @@ from tests.conftest import (
 # A validated config for the pure-function assertions. No Pulumi engine and no
 # OCI access, so these run even where the mocked stack cannot be loaded.
 BASE_CONFIG = build_config()
-
-CLUSTER = "ocid1.cluster.oc1.eu-stockholm-1.testcluster000000000000000000"
 
 
 class TestProgramLoads:
@@ -182,27 +180,19 @@ class TestHandoffFlag:
             unload_stack(program)
 
 
-class TestWorkloadIdentity:
-    """The dynamic group and ServiceAccount appear only with a tenancy."""
+class TestVaultAccess:
+    """The vault read policy appears only with both OCIDs configured."""
 
-    def test_absent_without_a_tenancy(self, pulumi_stack):
-        assert pulumi_stack.oke_dynamic_group is None
-        assert (
-            identity.create_eso_service_account(
-                pulumi_stack.cfg, "kubeconfig", CLUSTER, None
-            )
-            is None
-        )
+    def test_absent_by_default(self, pulumi_stack):
+        assert pulumi_stack.vault_read_policy is None
 
-    def test_created_with_a_tenancy(self, identity_stack):
-        assert identity_stack.oke_dynamic_group is not None
-        assert identity_stack.eso_service_account is not None
+    def test_created_with_a_tenancy_and_vault(self, identity_stack):
+        assert identity_stack.vault_read_policy is not None
 
     def test_created_before_the_argo_cd_bootstrap(self, identity_stack):
-        # The annotation is templated from two OCIDs this program produces, so
-        # the ServiceAccount has to be wired before the hand-over rather than
-        # delivered as a manifest the operator fills in afterwards.
-        assert identity_stack.eso_service_account is not None
+        # ESO cannot sync anything until the policy exists, so it has to be
+        # wired before the hand-over rather than after GitOps takes over.
+        assert identity_stack.vault_read_policy is not None
         assert identity_stack.argocd_resources["bootstrap_application"] is not None
 
 

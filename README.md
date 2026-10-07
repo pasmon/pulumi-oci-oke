@@ -103,6 +103,7 @@ pulumi config set ssh-public-key-path /path/to/id_ed25519.pub
 pulumi config set vcn-cidr 10.10.0.0/16
 pulumi config set endpoint-subnet-cidr 10.10.0.0/24
 pulumi config set nodes-subnet-cidr 10.10.1.0/24
+pulumi config set service-subnet-cidr 10.10.2.0/24
 pulumi config set pods-cidr 10.244.0.0/16
 pulumi config set services-cidr 10.96.0.0/16
 pulumi config set node-count 2
@@ -125,6 +126,12 @@ cat ~/.ssh/id_ed25519 | pulumi config set --secret argocd-repo-ssh-private-key
 pulumi config set argocd-github-app-id <app id>
 pulumi config set argocd-github-app-installation-id <installation id>
 cat my-app.private-key.pem | pulumi config set --secret argocd-github-app-private-key
+# Private keys and PEMs are multi-line, so they have to be piped in on stdin.
+# The `@<path>` form that earlier revisions of this file suggested is not a
+# Pulumi feature: `pulumi config set x @key.pem` stores the literal string
+# "@key.pem" and exits 0, so the breakage is silent. Passing the key as an
+# argument does not work either, because a PEM's second line starts with
+# "-----" and the CLI reads it as a flag. Only the pipe works.
 
 # Private keys and PEMs are multi-line, so they have to be piped in on stdin.
 # The `@<path>` form that earlier revisions of this file suggested is not a
@@ -133,9 +140,10 @@ cat my-app.private-key.pem | pulumi config set --secret argocd-github-app-privat
 # argument does not work either, because a PEM's second line starts with
 # "-----" and the CLI reads it as a flag. Only the pipe works.
 
-# Workload Identity. The tenancy OCID is the only identifier needed; Pulumi
-# templates the ServiceAccount annotation from it and the cluster OCID.
+# OCI Vault access for External Secrets Operator. Both are required together:
+# the policy is created in the tenancy root and scoped to the vault.
 pulumi config set tenancy-id ocid1.tenancy.oc1..<tenancy>
+pulumi config set vault-id ocid1.vault.oc1.eu-stockholm-1.<vault>
 ```
 
 Use the full `https://…git` URL rather than a `owner/repo` shorthand. Pulumi
@@ -178,14 +186,13 @@ Then open <http://localhost:8080>.
 ## Secrets
 
 **No application secret is ever created by Pulumi.** Credentials live in OCI
-Vault and reach the cluster through External Secrets Operator, authenticated by
-OKE Workload Identity. Pulumi creates only the `cert-manager`, `monitoring` and
-`external-secrets` namespaces so the synced Secrets have somewhere to land, and
-the one `ServiceAccount` ESO authenticates as.
+Vault and reach the cluster through External Secrets Operator, authenticated as
+an instance principal. Pulumi creates only the `cert-manager`, `monitoring` and
+`external-secrets` namespaces so the synced Secrets have somewhere to land.
 
-Create these in OCI Vault before enrolling Workload Identity. `argo-apps`
-documents the full list; these two are needed for the certificate and monitoring
-to come up:
+Create these in OCI Vault before configuring the policy. `argo-apps` documents
+the full list; these two are needed for the certificate and monitoring to come
+up:
 
 | Vault secret | Keys | Consumer |
 |---|---|---|
@@ -195,40 +202,54 @@ to come up:
 Each holds a JSON object, so a `remoteRef` that omits `property` receives the
 whole document rather than the credential.
 
-### Enrolling Workload Identity
+### Granting vault access
 
-Exactly one manual step remains, and it cannot be automated: a Workload Identity
-policy can only be assigned by a dynamic group, and Pulumi cannot mint OKE
-service-account tokens. Budget about ten minutes.
+There is no manual step. `pulumi up` creates the policy, and it is the whole of
+Pulumi's IAM footprint:
 
 1. Create the Vault secrets above in the OCI console.
-2. `pulumi up` creates the cluster `OKE` dynamic group and the `external-secrets`
-   `ServiceAccount`, with the OKE annotation already templated from the dynamic
-   group OCID and the cluster OCID. Read the group id:
+2. Set `tenancy-id` and `vault-id` to the OCIDs from that Vault.
+3. `pulumi up`.
 
-   ```bash
-   pulumi stack output oke_dynamic_group_id
-   ```
+The policy grants `read` on the `secret-family` of that one vault to OCI's
+built-in `oke` dynamic group, which matches every node instance in the tenancy:
 
-3. Create an OKE cluster API key and a `DynamicGroup` whose matching rule is the
-   `ServiceAccount`'s SPIFFE ID. OKE issues the token, so the rule has to name
-   it exactly:
+```
+Allow group oke to read secret-family in compartment <compartment> where all {
+request.principal.type = 'instance',
+target.vault.id = '<vault-ocid>'}
+```
 
-   ```
-   ALL {any.subject.name == 'spiffe://<cluster-ocid>/ns/external-secrets/sa/external-secrets'}
-   ```
+Every tenancy already has that dynamic group, which is why Pulumi creates no
+`DynamicGroup` and why there is no console step at all.
 
-4. Attach your API-key dynamic group to the Pulumi-created one in the console.
-   This is the step that cannot be scripted.
-
-The `ClusterSecretStore` and the `ExternalSecret` objects are synced from
-`argo-apps` and reference the `ServiceAccount` by name, so nothing in that
-repository has to name an OCID. Verify:
+Verify:
 
 ```bash
 kubectl get clustersecretstore oci-vault     # expect Ready: True
 kubectl get externalsecrets -A               # expect SecretSynced
 ```
+
+### Why instance principals and not Workload Identity
+
+OKE Workload Identity is finer grained: it identifies a pod by cluster,
+namespace and service account, so IAM can name one workload. It is also only
+available on **enhanced** clusters, which OCI bills at $0.10 per cluster-hour
+(~$74/month cap). This program creates a *basic* cluster on purpose, because that
+control plane is free and Always Free is the point.
+
+An instance principal identifies the compute instance instead, so the grant
+reaches any pod running on a node rather than just ESO. That is a real widening
+of scope. It is accepted because the policy is restricted to `read` on a single
+vault, and because there is no credential-free alternative on a free cluster.
+The other options, both worse: an OCI API key would put a long-lived private key
+in a cluster Secret and break the rule that Pulumi creates no application secret,
+and moving secrets into git under SOPS would drop OCI Vault entirely, rewriting
+every `ExternalSecret` in `argo-apps`.
+
+If the $74/month ever becomes acceptable, the change is `principalType: Workload`
+on the `ClusterSecretStore` plus an enhanced cluster; the policy in
+`oke/identity.py` would then be replaced by the workload-principal form.
 
 ## Argo CD self-management
 
@@ -272,10 +293,10 @@ depending on a CRD that Argo CD installs lives in `argo-apps`.
 
 | Pulumi | `argo-apps` |
 |---|---|
-| VCN, gateway, route table, 2 subnets, 2 security lists | `radio` namespace |
+| VCN, gateway, route table, 3 subnets, 3 security lists | `radio` namespace |
 | OKE cluster and node pool | `EnvoyProxy`, `GatewayClass`, `public-gateway` |
-| OKE `DynamicGroup` for Workload Identity | `ClusterSecretStore` and `ExternalSecret`s |
-| the ESO `ServiceAccount` and its OKE annotation | `ClusterIssuer`, `Certificate` |
+| IAM policy granting nodes read on the vault | `ClusterSecretStore` and `ExternalSecret`s |
+| | `ClusterIssuer`, `Certificate` |
 | `out/oke_kubeconfig` | `radio-audio-cache` PVC |
 | `argocd` namespace, Helm release, optional repository Secret | `k8s-monitoring` |
 | `cert-manager`, `monitoring`, `external-secrets` namespaces | Argo CD's own Helm release |
@@ -285,14 +306,22 @@ The reason for the split is that Pulumi cannot create anything whose CRD Argo CD
 installs, which keeps a single `pulumi up` sufficient. There is no `kubectl
 wait` and no second apply.
 
+### Why there are three subnets
+
+`endpoint` carries the Kubernetes API, `nodes` carries the workers, and
+`service` carries the OKE-managed load balancers. The third one is not
+optional: OKE rejects a node pool placed in a subnet registered as
+`service_lb_subnet_ids`, with *"The service subnets cannot be used by node
+pools"*. Sharing one subnet for both fails the node pool create.
+
 ### Why the node subnet is public
 
 The OCI cloud-controller-manager creates the Envoy Gateway load balancer in the
-subnet of its backends. A public node subnet gives that load balancer a public IP
-with no `oci-load-balancer-subnet-id` annotation, which is what lets the
-`EnvoyProxy` stay static YAML in `argo-apps`. A private node subnet would force
-the annotation, force Pulumi to own the `EnvoyProxy`, and force the two-stage
-apply this design avoids.
+subnet of its backends, not in the service subnet. A public node subnet gives
+that load balancer a public IP with no `oci-load-balancer-subnet-id` annotation,
+which is what lets the `EnvoyProxy` stay static YAML in `argo-apps`. A private
+node subnet would force the annotation, force Pulumi to own the `EnvoyProxy`, and
+force the two-stage apply this design avoids.
 
 Consequence: worker nodes get public IPs, the same as the RKE2 cluster they
 replace.
@@ -402,7 +431,7 @@ needed and nothing is created.
 | `oke/config.py` | Configuration loading and validation |
 | `oke/networking.py` | VCN, gateway, route table, security lists, subnets |
 | `oke/cluster.py` | AD and image discovery, cluster, node pool |
-| `oke/identity.py` | OKE `DynamicGroup` and the ESO `ServiceAccount` |
+| `oke/identity.py` | The IAM policy granting nodes read on the vault |
 | `oke/kubeconfig.py` | Fetches and writes `out/oke_kubeconfig` |
 | `oke/argocd.py` | Argo CD release and the single bootstrap Application |
 | `oke/namespaces.py` | The three namespaces GitOps writes into |

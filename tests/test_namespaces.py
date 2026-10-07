@@ -21,8 +21,9 @@ class TestNamespaceNames:
         assert namespaces.MONITORING_NAMESPACE == "monitoring"
 
     def test_eso_namespace(self):
-        # The Workload Identity ServiceAccount has to be created before any
-        # Application references it, so its namespace cannot wait for GitOps.
+        # ESO's own Application uses CreateNamespace, so this is belt and
+        # braces: it guarantees the ClusterSecretStore and its ExternalSecrets
+        # resolve the same way whichever Application syncs first.
         assert namespaces.ESO_NAMESPACE == "external-secrets"
 
     def test_namespaces_are_distinct(self):
@@ -32,13 +33,6 @@ class TestNamespaceNames:
             namespaces.ESO_NAMESPACE,
         }
         assert len(names) == 3
-
-    def test_config_agrees_with_the_module_constant(self):
-        # The ServiceAccount is created in cfg.eso_service_account_namespace
-        # while the namespace is created from ESO_NAMESPACE. Two sources of
-        # truth would let the ServiceAccount land in a namespace that does not
-        # exist, which fails at apply rather than at preview.
-        assert build_config().eso_service_account_namespace == namespaces.ESO_NAMESPACE
 
 
 class TestNoSecretsInThisModule:
