@@ -26,9 +26,18 @@ import pulumi_oci as oci
 OKE_DYNAMIC_GROUP_NAME = "oke"
 
 # Annotation prefix OCI uses to bind a Kubernetes ServiceAccount to a dynamic
-# group. The full annotation key continues with the dynamic group OCID, which is
-# an output of create_oke_dynamic_group rather than a config value.
+# group. The key continues with the dynamic group's *name*, not its OCID: an
+# OCID is 84 bytes and Kubernetes caps an annotation's name part at 63, so an
+# OCID key is rejected by the API server before OKE ever reads it.
 DYNAMIC_GROUP_ANNOTATION_PREFIX = "identity.oci.authorization.oke.info/"
+
+# The group's name, which is what the ServiceAccount annotation names. A
+# constant rather than the resource's `name` Output, because an annotation key
+# cannot hold an Output and this program already knows the name.
+OKE_DYNAMIC_GROUP_FULL_NAME = f"{OKE_DYNAMIC_GROUP_NAME}-radio"
+
+# Kubernetes annotation name-part limit, in bytes.
+ANNOTATION_NAME_MAX_BYTES = 63
 
 
 def spiffe_id(cluster_id, namespace, name):
@@ -43,15 +52,30 @@ def spiffe_id(cluster_id, namespace, name):
     return f"spiffe://{cluster_id}/ns/{namespace}/sa/{name}"
 
 
-def workload_identity_annotations(dynamic_group_id, cluster_id, namespace, name):
+def workload_identity_annotations(dynamic_group, cluster_id, namespace, name):
     """Return the annotation binding one ServiceAccount to the dynamic group.
 
-    The annotation key is the prefix plus the dynamic group OCID, and the value
-    is the SPIFFE ID. Both are Outputs, which the Kubernetes provider resolves
-    during apply, so the resulting object is correct without a second pass.
+    The annotation key names the dynamic group and the value is the SPIFFE ID.
+    Only the SPIFFE ID depends on an Output, so the map is built inside an
+    apply at the call site.
+
+    Args:
+        dynamic_group: the group name, which fits in an annotation key.
+        cluster_id: the cluster OCID, which is part of the SPIFFE ID.
+        namespace: the ServiceAccount's namespace.
+        name: the ServiceAccount's name.
+
+    Raises:
+        ValueError: if the group name cannot fit in an annotation key.
     """
+    if len(dynamic_group.encode("utf-8")) > ANNOTATION_NAME_MAX_BYTES:
+        raise ValueError(
+            f"dynamic group name {dynamic_group!r} exceeds the "
+            f"{ANNOTATION_NAME_MAX_BYTES}-byte annotation key limit"
+        )
+
     return {
-        f"{DYNAMIC_GROUP_ANNOTATION_PREFIX}{dynamic_group_id}": spiffe_id(
+        f"{DYNAMIC_GROUP_ANNOTATION_PREFIX}{dynamic_group}": spiffe_id(
             cluster_id, namespace, name
         )
     }
@@ -60,10 +84,14 @@ def workload_identity_annotations(dynamic_group_id, cluster_id, namespace, name)
 def oke_dynamic_group_rule(tenancy_id):
     """Build the matching rule for the OKE node dynamic group.
 
-    Every OKE node instance principal carries the tenancy's user OCID, so a
+    Every OCI node instance principal carries the tenancy's user OCID, so a
     single ``any.user.tenantid`` equality matches all of them.
+
+    The comparison is a single ``=``. IAM matching rules take ``=`` or ``!=``
+    only, and IDCS rejects ``==`` as an unparseable rule, which fails the
+    create rather than the policy.
     """
-    return f"ALL {{any.user.tenantid == '{tenancy_id}'}}"
+    return f"ALL {{any.user.tenantid = '{tenancy_id}'}}"
 
 
 def create_oke_dynamic_group(cfg):
@@ -83,7 +111,7 @@ def create_oke_dynamic_group(cfg):
         "oke-cluster-dynamic-group",
         # IAM resources live in the tenancy root, which is the compartment here.
         compartment_id=cfg.tenancy_id,
-        name=f"{OKE_DYNAMIC_GROUP_NAME}-radio",
+        name=OKE_DYNAMIC_GROUP_FULL_NAME,
         description="OKE cluster service accounts for workload identity",
         matching_rule=oke_dynamic_group_rule(cfg.tenancy_id),
     )
@@ -124,11 +152,13 @@ def create_eso_service_account(cfg, kubeconfig, cluster_id, dynamic_group):
         metadata={
             "name": name,
             "namespace": namespace,
-            "annotations": workload_identity_annotations(
-                dynamic_group.id, cluster_id, namespace, name
+            "annotations": cluster_id.apply(
+                lambda resolved: workload_identity_annotations(
+                    OKE_DYNAMIC_GROUP_FULL_NAME, resolved, namespace, name
+                )
             ),
         },
-        # The annotation carries the dynamic group OCID, so this cannot be
-        # created before the group exists.
+        # The annotation names the dynamic group, so this cannot be created
+        # before the group exists.
         opts=pulumi.ResourceOptions(provider=provider, depends_on=[dynamic_group]),
     )

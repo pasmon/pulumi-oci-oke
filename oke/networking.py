@@ -1,4 +1,4 @@
-"""VCN, internet gateway, route table, security lists and the two subnets.
+"""VCN, internet gateway, route table, security lists and the three subnets.
 
 Both subnets are public. That is deliberate: the OCI cloud-controller-manager
 creates the Envoy Gateway load balancer in the subnet of its backends, so a
@@ -223,12 +223,53 @@ def create_network(cfg):
         security_list_ids=[node_security_list.id],
     )
 
+    # OKE-managed load balancers get their own subnet. OKE refuses to place a
+    # node pool in a subnet registered as a service load balancer subnet, so
+    # reusing the node subnet here fails the node pool create.
+    service_security_list = oci.core.SecurityList(
+        "oke-service-securitylist",
+        compartment_id=cfg.compartment_id,
+        vcn_id=vcn.id,
+        display_name="oke-service-securitylist",
+        ingress_security_rules=[
+            # Backends and health checks arrive from inside the VCN.
+            _ingress_rule("all", cfg.vcn_cidr),
+            _ingress_rule(
+                "6",
+                "0.0.0.0/0",
+                min_port=LB_BACKEND_PORT_MIN,
+                max_port=LB_BACKEND_PORT_MAX,
+                transport="tcp",
+            ),
+        ],
+        egress_security_rules=[
+            oci.core.SecurityListEgressSecurityRuleArgs(
+                protocol="all",
+                destination="0.0.0.0/0",
+                destination_type="CIDR_BLOCK",
+                stateless=False,
+            )
+        ],
+    )
+
+    service_subnet = oci.core.Subnet(
+        "oke-service-subnet",
+        compartment_id=cfg.compartment_id,
+        vcn_id=vcn.id,
+        cidr_block=cfg.service_subnet_cidr,
+        display_name="oke-service-subnet",
+        route_table_id=route_table.id,
+        security_list_ids=[service_security_list.id],
+    )
+
     return {
         "vcn": vcn,
         "internet_gateway": internet_gateway,
         "route_table": route_table,
         "endpoint_security_list": endpoint_security_list,
         "nodes_security_list": node_security_list,
+        "service_security_list": service_security_list,
         "endpoint_subnet": endpoint_subnet,
         "nodes_subnet": nodes_subnet,
+        "service_subnet": service_subnet,
     }

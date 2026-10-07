@@ -1,7 +1,9 @@
 """Unit tests for the Wireguard tunnel script and address derivation."""
 
+import asyncio
 import base64
 
+import pulumi
 import pytest
 
 from oke import wireguard
@@ -20,6 +22,26 @@ def wg_config(**overrides):
     values = dict(WIREGUARD_VALUES)
     values.update(overrides)
     return build_config(**values)
+
+
+def secret_config():
+    """Build a config whose keys are Outputs, as ``get_secret`` returns them.
+
+    These two keys are the only secret values the program reads, and they are
+    the ones that end up inside node user data.
+    """
+    asyncio.set_event_loop(asyncio.new_event_loop())
+    return wg_config(
+        wireguard_private_key=pulumi.Output.from_input("realPrivateKey="),
+        wireguard_preshared_key=pulumi.Output.from_input("realPresharedKey="),
+    )
+
+
+def decode_payload(payload):
+    """Resolve and base64-decode node user data, which may be an Output."""
+    if isinstance(payload, pulumi.Output):
+        payload = asyncio.get_event_loop().run_until_complete(payload.future())
+    return base64.b64decode(payload).decode("utf-8")
 
 
 class TestNodeTunnelAddress:
@@ -101,6 +123,14 @@ class TestNodeUserData:
         payload = wireguard.build_node_user_data(wg_config())
         decoded = base64.b64decode(payload).decode("utf-8")
         assert "Endpoint = 198.51.100.7:51820" in decoded
+
+    def test_script_carries_the_secret_keys(self):
+        # The keys are secret Outputs. Formatting one writes the stringified-
+        # Output warning into wg0.conf, which fails at the router, not at boot.
+        decoded = decode_payload(wireguard.build_node_user_data(secret_config()))
+        assert "PrivateKey = realPrivateKey=" in decoded
+        assert "PresharedKey = realPresharedKey=" in decoded
+        assert "Calling __str__" not in decoded
 
     def test_script_installs_the_interface(self):
         payload = wireguard.build_node_user_data(wg_config())

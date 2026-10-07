@@ -13,8 +13,11 @@ from oke.config import DEFAULT_NODE_SHAPE
 NODE_POOL_OPTION_ID = "all"
 
 # The node pool is ARM, because the Always Free allowance only covers Ampere A1.
-NODE_OS_ARCH = "ARM_64"
-NODE_OS_TYPE = "LINUX"
+# GetNodePoolOptions takes only these three OS types, and "LINUX" is not one of
+# them. OL8 is the OKE-optimized Oracle Linux that the A1 images are built from;
+# OL7 is closed for new ARM node pools.
+NODE_OS_ARCH = "AARCH64"
+NODE_OS_TYPE = "OL8"
 
 # Belt and braces: OCI already filters by the arguments above, but an ARM image
 # is what the plan depends on, so the chosen source name is asserted too.
@@ -61,11 +64,23 @@ def version_sort_key(version):
     return tuple(parts)
 
 
+def source_field(source, name):
+    """Read one field of a node pool option source.
+
+    The provider documents these as objects, but ``sources`` arrives as plain
+    dicts, so reading an attribute off it silently yields nothing and every
+    image looks like a non-ARM one.
+    """
+    if isinstance(source, dict):
+        return source.get(name)
+    return getattr(source, name, None)
+
+
 def select_arm_image(sources):
     """Pick the ARM node image from the node pool option sources.
 
     Args:
-        sources: the source objects OCI advertises for this architecture.
+        sources: the sources OCI advertises for this architecture.
 
     Returns:
         The image OCID.
@@ -75,8 +90,8 @@ def select_arm_image(sources):
             cannot host the Always Free node shape.
     """
     for source in sources or []:
-        name = (getattr(source, "source_name", None) or "").lower()
-        image_id = getattr(source, "image_id", None)
+        name = (source_field(source, "source_name") or "").lower()
+        image_id = source_field(source, "image_id")
         if not image_id:
             continue
         if any(marker in name for marker in ARM_IMAGE_MARKERS):
@@ -88,16 +103,23 @@ def select_arm_image(sources):
     )
 
 
-def create_cluster(
-    cfg, vcn_id, endpoint_subnet_id, nodes_subnet_id, node_metadata=None
+def create_cluster(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    cfg,
+    vcn_id,
+    endpoint_subnet_id,
+    nodes_subnet_id,
+    service_subnet_id,
+    node_metadata=None,
 ):
     """Create the OKE cluster and its node pool.
 
     Args:
         cfg: the validated :class:`oke.config.Config`.
-        vcn_id: the VCN that hosts both subnets.
+        vcn_id: the VCN that hosts all three subnets.
         endpoint_subnet_id: the public subnet that carries the API endpoint.
         nodes_subnet_id: the public subnet that carries the worker nodes.
+        service_subnet_id: the subnet OKE puts its load balancers in. It cannot
+            be the node subnet, or the node pool create is rejected.
         node_metadata: optional node user data, base64 encoded already.
 
     Returns:
@@ -146,7 +168,7 @@ def create_cluster(
                 pods_cidr=cfg.pods_cidr,
                 services_cidr=cfg.services_cidr,
             ),
-            service_lb_subnet_ids=[nodes_subnet_id],
+            service_lb_subnet_ids=[service_subnet_id],
         ),
     )
 
@@ -206,15 +228,16 @@ def create_cluster(
 
 def image_matches_version(source, version):
     """Whether a node pool source is an OKE-optimized image for this version."""
-    name = (getattr(source, "source_name", None) or "").lower()
+    name = (source_field(source, "source_name") or "").lower()
     bare_version = version.lstrip("vV")
-    # OKE-optimized ARM images look like "Oracle-Kubernetes-Engine-aarch64-1.31.1".
-    if f"-{bare_version}" in name:
+    # ARM sources look like "Oracle-Linux-8.10-aarch64-2026.08.14-0-OKE-1.36.4-1820",
+    # so the version sits after the OKE marker rather than straight after the arch.
+    if f"oke-{bare_version}" in name:
         return True
     # Fall back to a major.minor match so a patch-level image name difference
     # does not leave the node pool without an image.
     short = ".".join(bare_version.split(".")[:2])
-    return f"-{short}." in name or f"-{short}" in name
+    return f"oke-{short}." in name or f"oke-{short}" in name
 
 
 def _read_ssh_public_key(cfg):

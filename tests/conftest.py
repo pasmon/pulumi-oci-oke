@@ -123,12 +123,14 @@ class StackMocks(pulumi.runtime.Mocks):
                 "sources": [
                     {
                         "image_id": "ocid1.image.x86.test",
-                        "source_name": "Oracle-Kubernetes-Engine-1.31.1-20260101",
+                        "source_name": "Oracle-Linux-8.10-2026.08.14-0-OKE-1.31.1-1820",
                         "source_type": "IMAGE",
                     },
                     {
                         "image_id": "ocid1.image.arm.test",
-                        "source_name": "Oracle-Kubernetes-Engine-aarch64-1.31.1-20260101",
+                        "source_name": (
+                            "Oracle-Linux-8.10-aarch64-2026.08.14-0-OKE-1.31.1-1820"
+                        ),
                         "source_type": "IMAGE",
                     },
                 ],

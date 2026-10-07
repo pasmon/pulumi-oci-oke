@@ -111,6 +111,9 @@ class TestDefaultTopology:
         assert cfg.vcn_cidr == "10.10.0.0/16"
         assert cfg.endpoint_subnet_cidr == "10.10.0.0/24"
         assert cfg.nodes_subnet_cidr == "10.10.1.0/24"
+        # A third subnet, because the load balancer subnet cannot be the node
+        # subnet: OKE rejects a node pool placed in a service subnet.
+        assert cfg.service_subnet_cidr == "10.10.2.0/24"
 
     def test_pod_and_service_ranges_sit_outside_the_vcn(self):
         cfg = build_config()

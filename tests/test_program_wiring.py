@@ -5,10 +5,12 @@ Pulumi resource, a missing dependency, or a data source whose mocked shape does
 not match how the program reads it. Nothing is created against OCI.
 """
 
+import asyncio
 import base64
 import inspect
 import os
 
+import pulumi
 import pytest
 
 from oke import argocd, identity, kubeconfig, wireguard
@@ -44,8 +46,15 @@ class TestProgramLoads:
             "route_table",
             "endpoint_subnet",
             "nodes_subnet",
+            "service_subnet",
         ):
             assert network[key] is not None, f"missing {key}"
+
+    def test_load_balancer_subnet_is_not_the_node_subnet(self, pulumi_stack):
+        # OKE rejects a node pool placed in a service load balancer subnet, so
+        # these two have to be different subnets.
+        network = pulumi_stack.network
+        assert network["service_subnet"] is not network["nodes_subnet"]
 
     def test_the_three_namespaces_are_created(self, pulumi_stack):
         assert set(pulumi_stack.created_namespaces) == {
@@ -216,8 +225,17 @@ class TestNodeMetadata:
 
 
 def wireguard_user_data(program):
-    """Read the node_metadata that was passed to the node pool."""
-    return wireguard.build_node_user_data(program.cfg)
+    """Read the node_metadata that was passed to the node pool.
+
+    The secret keys are Outputs, so the payload is one too and has to be
+    resolved before it can be read.
+    """
+    payload = wireguard.build_node_user_data(program.cfg)
+    if payload is None or not isinstance(payload, pulumi.Output):
+        return payload
+    # The loop load_stack installed, not a new one: the Output's futures are
+    # already attached to it and a fresh loop deadlocks.
+    return asyncio.get_event_loop().run_until_complete(payload.future())
 
 
 def decode(payload):

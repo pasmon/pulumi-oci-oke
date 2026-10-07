@@ -77,6 +77,11 @@ class Config:
             self.config.get("endpoint-subnet-cidr") or "10.10.0.0/24"
         )
         self.nodes_subnet_cidr = self.config.get("nodes-subnet-cidr") or "10.10.1.0/24"
+        # OKE rejects a subnet that is both a service load balancer subnet and a
+        # node pool subnet, so the load balancers need one of their own.
+        self.service_subnet_cidr = (
+            self.config.get("service-subnet-cidr") or "10.10.2.0/24"
+        )
         self.vcn_dns_label = self.config.get("vcn-dns-label") or "radiooke"
 
         # Kubernetes
@@ -201,6 +206,7 @@ class Config:
         named = {
             "endpoint-subnet-cidr": self.endpoint_subnet_cidr,
             "nodes-subnet-cidr": self.nodes_subnet_cidr,
+            "service-subnet-cidr": self.service_subnet_cidr,
             "pods-cidr": self.pods_cidr,
             "services-cidr": self.services_cidr,
         }
@@ -216,7 +222,11 @@ class Config:
             except ValueError as error:
                 raise ValueError(f"Invalid {name} {cidr!r}: {error}") from error
 
-        for name in ("endpoint-subnet-cidr", "nodes-subnet-cidr"):
+        for name in (
+            "endpoint-subnet-cidr",
+            "nodes-subnet-cidr",
+            "service-subnet-cidr",
+        ):
             if not networks[name].subnet_of(vcn):
                 raise ValueError(
                     f"{name} {networks[name]} is not inside vcn-cidr {vcn}"
