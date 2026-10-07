@@ -11,7 +11,15 @@ and reach the cluster through External Secrets Operator.
 
 import pulumi
 
-from oke import argocd, cluster, identity, kubeconfig, namespaces, networking, wireguard
+from oke import (
+    argocd,
+    cluster,
+    identity,
+    kubeconfig,
+    namespaces,
+    networking,
+    wireguard,
+)
 from oke.config import Config
 
 cfg = Config()
@@ -22,12 +30,12 @@ cfg = Config()
 network = networking.create_network(cfg)
 
 # --------------------------------------------------------------------------- #
-# Workload Identity prerequisite
+# Vault access for External Secrets Operator
 # --------------------------------------------------------------------------- #
-# IAM resources live in the tenancy root. This dynamic group is what lets OKE
-# workloads assume a dynamic policy, which is how ESO authenticates to Vault
-# without any static credential.
-oke_dynamic_group = identity.create_oke_dynamic_group(cfg)
+# IAM resources live in the tenancy root. This policy is what lets the cluster's
+# node instance principals read the vault, which is how ESO authenticates without
+# any static credential.
+vault_read_policy = identity.create_vault_read_policy(cfg)
 
 # --------------------------------------------------------------------------- #
 # Cluster
@@ -59,24 +67,12 @@ created_namespaces = namespaces.create_namespaces(
     [
         namespaces.CERT_MANAGER_NAMESPACE,
         namespaces.MONITORING_NAMESPACE,
-        # Needed before the ServiceAccount below, which cannot be created in a
-        # namespace that does not exist.
+        # The ESO chart creates its own namespace with CreateNamespace, so this
+        # is not strictly needed. It stays because the ClusterSecretStore and the
+        # ExternalSecrets it feeds have to resolve the same way whichever
+        # Application syncs first.
         namespaces.ESO_NAMESPACE,
     ],
-)
-
-# --------------------------------------------------------------------------- #
-# External Secrets ServiceAccount
-# --------------------------------------------------------------------------- #
-# The Workload Identity annotation needs two OCIDs this program produces: the
-# dynamic group's and the cluster's. Templating the ServiceAccount here is what
-# removes the hand-edited manifest from the bootstrap flow, leaving the OCI
-# console policy attachment as the only manual step.
-eso_service_account = identity.create_eso_service_account(
-    cfg,
-    admin_kubeconfig.content,
-    cluster_id=oke["cluster"].id,
-    dynamic_group=oke_dynamic_group,
 )
 
 # --------------------------------------------------------------------------- #
@@ -122,14 +118,12 @@ pulumi.export("argocd_bootstrap_repo_url", cfg.argocd_repo_url)
 
 pulumi.export("created_namespaces", sorted(created_namespaces.keys()))
 
-# Workload Identity. The identifiers are exported so the console step in the
-# README can be completed without reading the program's output by other means.
+# Vault access, so the README's verification step can be checked without reading
+# the program's output by other means.
 pulumi.export(
-    "oke_dynamic_group_id", oke_dynamic_group.id if oke_dynamic_group else None
+    "vault_read_policy_id", vault_read_policy.id if vault_read_policy else None
 )
-pulumi.export("eso_service_account_namespace", cfg.eso_service_account_namespace)
-pulumi.export("eso_service_account_name", cfg.eso_service_account_name)
-pulumi.export("eso_service_account_created", eso_service_account is not None)
+pulumi.export("vault_id", cfg.vault_id)
 
 pulumi.export("wireguard_enabled", cfg.wireguard_enabled)
 if cfg.wireguard_enabled:

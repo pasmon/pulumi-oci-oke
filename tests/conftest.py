@@ -96,8 +96,8 @@ class StackMocks(pulumi.runtime.Mocks):
         if args.typ == "oci:core/vcn:Vcn":
             outputs.setdefault("cidr_blocks", ["10.10.0.0/16"])
             outputs.setdefault("default_route_table_id", "ocid1.routetable.test")
-        if args.typ == "oci:identity/dynamicgroup:DynamicGroup":
-            outputs.setdefault("id", "ocid1.dynamicgroup.oc1..test")
+        if args.typ == "oci:identity/policy:Policy":
+            outputs.setdefault("id", "ocid1.policy.oc1..test")
         if args.typ == "oci:containerengine/cluster:Cluster":
             outputs.setdefault("name", "oke-cluster")
 
@@ -120,6 +120,8 @@ class StackMocks(pulumi.runtime.Mocks):
                 "compartment_id": "ocid1.tenancy.oc1..test",
                 "id": "all",
                 "kubernetes_versions": ["v1.30.4", "v1.31.1", "v1.29.9"],
+                # Dicts, and real source names: the provider returns these as
+                # plain maps and the version sits after the OKE marker.
                 "sources": [
                     {
                         "image_id": "ocid1.image.x86.test",
@@ -177,6 +179,7 @@ WIREGUARD_STACK_CONFIG = {
 
 IDENTITY_STACK_CONFIG = {
     "tenancy-id": "ocid1.tenancy.oc1..testtenancy0000000000000000000000000000000",
+    "vault-id": "ocid1.vault.oc1.eu-stockholm-1.testvault000000000000000000000",
 }
 
 
@@ -236,7 +239,7 @@ def wireguard_stack():
 
 @pytest.fixture(scope="session")
 def identity_stack():
-    """The program loaded with the Workload Identity identifiers configured."""
+    """The program loaded with the Vault access identifiers configured."""
     program = load_stack({**BASE_STACK_CONFIG, **IDENTITY_STACK_CONFIG})
     yield program
     unload_stack(program)

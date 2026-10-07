@@ -23,11 +23,10 @@ CERT_MANAGER_NAMESPACE = "cert-manager"
 # here, and the k8s-monitoring chart references the Secret by this name.
 MONITORING_NAMESPACE = "monitoring"
 
-# Where the ESO ServiceAccount carrying the Workload Identity annotation lives.
-# It is created here rather than by argo-apps because the annotation's key and
-# value are both OCIDs that this program produces, and because the ServiceAccount
-# has to exist before any Application that references it. Config carries the
-# name so the two cannot drift; see Config.eso_service_account_namespace.
+# Where ESO runs. Its own chart uses CreateNamespace, so creating it here is a
+# no-op for that Application and Argo CD will not prune it. It exists so the
+# ClusterSecretStore and the ExternalSecrets it feeds resolve the same way
+# whichever Application syncs first.
 ESO_NAMESPACE = "external-secrets"
 
 
