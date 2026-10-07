@@ -37,6 +37,7 @@ oke = cluster.create_cluster(
     vcn_id=network["vcn"].id,
     endpoint_subnet_id=network["endpoint_subnet"].id,
     nodes_subnet_id=network["nodes_subnet"].id,
+    service_subnet_id=network["service_subnet"].id,
     node_metadata=wireguard.build_node_user_data(cfg),
 )
 
@@ -97,6 +98,7 @@ pulumi.export("kubeconfig_path", kubeconfig.KUBECONFIG_PATH)
 pulumi.export("vcn_cidr", cfg.vcn_cidr)
 pulumi.export("endpoint_subnet_id", network["endpoint_subnet"].id)
 pulumi.export("nodes_subnet_id", network["nodes_subnet"].id)
+pulumi.export("service_subnet_id", network["service_subnet"].id)
 
 pulumi.export("kubernetes_version", oke["kubernetes_version"])
 pulumi.export("node_image_id", oke["node_image_id"])

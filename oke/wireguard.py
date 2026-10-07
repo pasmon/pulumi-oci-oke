@@ -18,6 +18,8 @@ Raspberry Pi's network guard still accepts it.
 import base64
 import ipaddress
 
+import pulumi
+
 WIREGUARD_INTERFACE = "wg0"
 
 # Nodes are behind NAT, so without this the router cannot open a return path.
@@ -79,13 +81,28 @@ def build_wireguard_command(cfg, pods_cidr):
     The same script runs on every node. It reads the instance metadata for its
     own private IP and derives the tunnel address from it.
 
+    The two keys are secret Outputs, so the whole script is built in an apply.
+    Formatting an Output writes the stringified-Output warning into wg0.conf
+    instead of the key, which fails authentication at the router rather than at
+    boot.
+
     Args:
         cfg: the validated :class:`oke.config.Config`.
         pods_cidr: the cluster pods CIDR, used for the masquerade rule.
 
     Returns:
-        The shell script.
+        The shell script, or an ``Output[str]`` of it when a key is secret.
     """
+    keys = [cfg.wireguard_private_key, cfg.wireguard_preshared_key]
+    if any(isinstance(key, pulumi.Output) for key in keys):
+        return pulumi.Output.all(*keys).apply(
+            lambda resolved: _wireguard_script(cfg, pods_cidr, *resolved)
+        )
+    return _wireguard_script(cfg, pods_cidr, *keys)
+
+
+def _wireguard_script(cfg, pods_cidr, private_key, preshared_key):
+    """Render the setup script once the secret keys are resolved."""
     return f"""set -eu
 # OCI instance metadata service, reachable from every node on the metadata
 # endpoint. Used to discover this node's own private IP so the tunnel address
@@ -113,7 +130,7 @@ tee /etc/wireguard/{WIREGUARD_INTERFACE}.conf << EOF > /dev/null
 [Interface]
 Address = $ADDRESS
 ListenPort = {cfg.wireguard_listen_port}
-PrivateKey = {cfg.wireguard_private_key}
+PrivateKey = {private_key}
 PostUp = iptables -t nat -A POSTROUTING -s {pods_cidr} -o {WIREGUARD_INTERFACE} -j MASQUERADE
 PostUp = iptables -I FORWARD -i {WIREGUARD_INTERFACE} -j ACCEPT
 PostDown = iptables -t nat -D POSTROUTING -s {pods_cidr} -o {WIREGUARD_INTERFACE} -j MASQUERADE
@@ -121,7 +138,7 @@ PostDown = iptables -D FORWARD -i {WIREGUARD_INTERFACE} -j ACCEPT
 
 [Peer]
 PublicKey = {cfg.wireguard_peer_public_key}
-PresharedKey = {cfg.wireguard_preshared_key}
+PresharedKey = {preshared_key}
 Endpoint = {cfg.wireguard_peer_endpoint}:{cfg.wireguard_listen_port}
 AllowedIPs = {wireguard_allowed_ips(cfg)}
 PersistentKeepalive = {WIREGUARD_PERSISTENT_KEEPALIVE}
@@ -138,6 +155,12 @@ def build_node_user_data(cfg):
     """Build the base64 node user data, or ``None`` when Wireguard is off."""
     if not cfg.wireguard_enabled:
         return None
-    return base64.b64encode(
-        build_wireguard_command(cfg, cfg.pods_cidr).encode("utf-8")
-    ).decode("utf-8")
+    script = build_wireguard_command(cfg, cfg.pods_cidr)
+    if not isinstance(script, pulumi.Output):
+        return _encode(script)
+    return script.apply(_encode)
+
+
+def _encode(script):
+    """Base64 the script, because OKE node user data is not plain text."""
+    return base64.b64encode(script.encode("utf-8")).decode("utf-8")

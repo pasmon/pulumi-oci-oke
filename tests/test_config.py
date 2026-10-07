@@ -50,13 +50,26 @@ class TestCidrValidation:
             )
 
     def test_vcn_containing_the_subnets_is_accepted(self):
-        # The VCN deliberately encloses both subnets, which is not an overlap.
+        # The VCN deliberately encloses all three subnets, which is not an overlap.
         cfg = build_config(
             vcn_cidr="10.10.0.0/16",
             endpoint_subnet_cidr="10.10.0.0/24",
             nodes_subnet_cidr="10.10.1.0/24",
         )
         assert cfg.endpoint_subnet_cidr == "10.10.0.0/24"
+
+    def test_service_subnet_must_differ_from_the_node_subnet(self):
+        # OKE rejects a node pool in a service load balancer subnet, so sharing
+        # one range fails at apply rather than at preview.
+        with pytest.raises(ValueError, match="overlaps"):
+            build_config(
+                nodes_subnet_cidr="10.10.2.0/24",
+                service_subnet_cidr="10.10.2.0/24",
+            )
+
+    def test_service_subnet_outside_the_vcn_is_rejected(self):
+        with pytest.raises(ValueError, match="service-subnet-cidr"):
+            build_config(service_subnet_cidr="192.168.9.0/24")
 
 
 class TestNodeSizing:
