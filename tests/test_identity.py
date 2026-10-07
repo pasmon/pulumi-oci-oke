@@ -37,8 +37,19 @@ class TestVaultReadStatement:
         assert "namespace" not in statement
 
     def test_is_scoped_to_the_vault_compartment(self):
-        statement = identity.vault_read_statement(COMPARTMENT, VAULT)
+        statement = identity.vault_read_statement(
+            COMPARTMENT, VAULT, "ocid1.tenancy.oc1..root"
+        )
         assert f"in compartment {COMPARTMENT}" in statement
+
+    def test_scopes_to_tenancy_when_the_vault_is_in_the_root(self):
+        # A tenancy OCID on the left of the statement makes CreatePolicy answer
+        # 400 "Compartment {...} does not exist or is not part of the policy
+        # compartment subtree". The root is spelled "tenancy".
+        root = "ocid1.tenancy.oc1..aaaaaaaaroot0000000000000000000000"
+        statement = identity.vault_read_statement(root, VAULT, root)
+        assert "in tenancy where all" in statement
+        assert root not in statement.split("where all")[0]
 
     def test_condition_block_is_closed(self):
         # An unbalanced brace makes OCI reject the whole policy at apply.

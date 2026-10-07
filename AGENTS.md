@@ -98,7 +98,10 @@ uv run pytest -v
   type first, and read README, "Why instance principals" for the trade-off.
 - **The IAM policy lives in the tenancy root**, not in the configured
   compartment. IAM resources are tenancy-scoped. The *statement* names the
-  compartment holding the vault, which is a different thing.
+  compartment holding the vault, which is a different thing — and when those
+  two are the same, as they are when `compartment-id` is the tenancy OCID, the
+  statement must say `in tenancy`. OCI does not accept a tenancy OCID on the
+  left of a statement.
 - **Do not create the `oke` dynamic group.** OCI creates one in every tenancy and
   it already matches the cluster's node instances. A Pulumi-managed group of that
   name collides with it.
