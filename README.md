@@ -220,6 +220,11 @@ request.principal.type = 'instance',
 target.vault.id = '<vault-ocid>'}
 ```
 
+When the vault sits in the tenancy root, so `compartment-id` is the tenancy
+OCID, the clause reads `in tenancy` instead. OCI rejects a tenancy OCID on the
+left of a statement with `Compartment {...} does not exist or is not part of
+the policy compartment subtree`; the root is spelled `tenancy`.
+
 Every tenancy already has that dynamic group, which is why Pulumi creates no
 `DynamicGroup` and why there is no console step at all.
 

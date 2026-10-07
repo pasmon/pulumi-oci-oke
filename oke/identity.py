@@ -27,7 +27,28 @@ OKE_DYNAMIC_GROUP_NAME = "oke"
 VAULT_READ_PERMISSION = "secret-family"
 
 
-def vault_read_statement(compartment_id, vault_id):
+def statement_scope(compartment_id, tenancy_id):
+    """Render the ``in ...`` clause for the compartment holding the vault.
+
+    OCI rejects a tenancy OCID on the left of a policy statement: CreatePolicy
+    answers 400 ``Compartment {...} does not exist or is not part of the policy
+    compartment subtree``. The tenancy root is not addressable as a compartment,
+    it is spelled ``tenancy``. Deploying into the root compartment is normal
+    here, since ``compartment-id`` is set to the tenancy OCID.
+
+    Args:
+        compartment_id: the compartment holding the vault.
+        tenancy_id: the tenancy root OCID, or ``None`` if not configured.
+
+    Returns:
+        Either ``tenancy`` or ``compartment <ocid>``.
+    """
+    if compartment_id == tenancy_id:
+        return "tenancy"
+    return f"compartment {compartment_id}"
+
+
+def vault_read_statement(compartment_id, vault_id, tenancy_id=None):
     """Build the IAM statement granting node principals read on one vault.
 
     The principal is a compute instance rather than a pod, so the statement
@@ -38,13 +59,14 @@ def vault_read_statement(compartment_id, vault_id):
     Args:
         compartment_id: the compartment holding the vault.
         vault_id: the vault OCID.
+        tenancy_id: the tenancy root OCID, used to detect the root compartment.
 
     Returns:
         The statement, ready for ``oci.identity.Policy``.
     """
     return (
         f"Allow group {OKE_DYNAMIC_GROUP_NAME} to read {VAULT_READ_PERMISSION} "
-        f"in compartment {compartment_id} where all {{"
+        f"in {statement_scope(compartment_id, tenancy_id)} where all {{"
         f"request.principal.type = 'instance', "
         f"target.vault.id = '{vault_id}'"
         f"}}"
@@ -71,5 +93,7 @@ def create_vault_read_policy(cfg):
         compartment_id=cfg.tenancy_id,
         name="oke-vault-read-policy",
         description="Read-only OCI Vault access for OKE node instance principals",
-        statements=[vault_read_statement(cfg.compartment_id, cfg.vault_id)],
+        statements=[
+            vault_read_statement(cfg.compartment_id, cfg.vault_id, cfg.tenancy_id)
+        ],
     )
