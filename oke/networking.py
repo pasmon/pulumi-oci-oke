@@ -13,6 +13,9 @@ import pulumi_oci as oci
 # Kubernetes API server port, opened to the internet on the endpoint subnet.
 KUBE_API_PORT = 6443
 
+# Public Envoy Gateway listener.
+HTTPS_PORT = 443
+
 # OCI flexible load balancer backend ports. The load balancer health checks and
 # the connections to the Envoy pods both arrive on this range.
 LB_BACKEND_PORT_MIN = 30000
@@ -111,6 +114,29 @@ def build_ingress_rules(vcn_cidr, ssh_from_anywhere=False):
         )
 
     return rules
+
+
+def build_service_ingress_rules(vcn_cidr):
+    """Build ingress rules for the public load balancer subnet."""
+    return [
+        _ingress_rule("all", vcn_cidr),
+        # The public Envoy listener terminates HTTPS on the load balancer.
+        _ingress_rule(
+            "6",
+            "0.0.0.0/0",
+            min_port=HTTPS_PORT,
+            max_port=HTTPS_PORT,
+            transport="tcp",
+        ),
+        # OCI flexible load balancer backends and health checks.
+        _ingress_rule(
+            "6",
+            "0.0.0.0/0",
+            min_port=LB_BACKEND_PORT_MIN,
+            max_port=LB_BACKEND_PORT_MAX,
+            transport="tcp",
+        ),
+    ]
 
 
 def create_network(cfg):
@@ -220,17 +246,7 @@ def create_network(cfg):
         compartment_id=cfg.compartment_id,
         vcn_id=vcn.id,
         display_name="oke-service-securitylist",
-        ingress_security_rules=[
-            # Backends and health checks arrive from inside the VCN.
-            _ingress_rule("all", cfg.vcn_cidr),
-            _ingress_rule(
-                "6",
-                "0.0.0.0/0",
-                min_port=LB_BACKEND_PORT_MIN,
-                max_port=LB_BACKEND_PORT_MAX,
-                transport="tcp",
-            ),
-        ],
+        ingress_security_rules=build_service_ingress_rules(cfg.vcn_cidr),
         egress_security_rules=[
             oci.core.SecurityListEgressSecurityRuleArgs(
                 protocol="all",
