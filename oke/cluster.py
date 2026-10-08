@@ -212,9 +212,16 @@ def create_cluster(  # pylint: disable=too-many-arguments,too-many-positional-ar
         ),
         node_metadata=metadata_args,
         ssh_public_key=_read_ssh_public_key(cfg),
-        # Force replacement when the image or version changes, otherwise the
-        # node pool keeps the old bootstrap data.
-        opts=pulumi.ResourceOptions(depends_on=[cluster], delete_before_replace=True),
+        # nodeMetadata is Updatable in the OKE API, and OKE accepts a new value
+        # and reports the node pool updated. It only reaches instances "on
+        # launch" though, so an update alone leaves every running node on its
+        # old user data and the change looks applied while nothing happened.
+        # Replacing is the only way to make new bootstrap data take effect.
+        opts=pulumi.ResourceOptions(
+            depends_on=[cluster],
+            delete_before_replace=True,
+            replace_on_changes=["nodeMetadata"],
+        ),
     )
 
     return {

@@ -96,6 +96,11 @@ uv run pytest -v
   user data fails never joins the cluster, so an `apt-get` there once kept the
   node pool out of a working state and disabled the tunnel entirely. Anything in
   that script that can fail must warn and exit 0 rather than abort.
+- **A `nodeMetadata` change replaces the node pool.** OCI marks the property
+  Updatable and accepts a new value, so `pulumi up` reports the pool updated and
+  looks like it worked. The value only reaches instances *on launch*, so running
+  nodes keep their old bootstrap data and the change is a silent no-op.
+  `cluster.py` sets `replace_on_changes` for exactly this reason; do not drop it.
 - **ESO authenticates as an instance principal, not Workload Identity.** OKE only
   issues workload identity tokens on *enhanced* clusters, which are billed hourly;
   this program creates a basic cluster to stay in Always Free. Do not reintroduce
