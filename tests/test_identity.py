@@ -12,11 +12,29 @@ VAULT = "ocid1.vault.oc1.eu-stockholm-1.testvault0000000000000000000000"
 class TestVaultReadStatement:
     """The grant is read-only, vault-scoped, and aimed at instance principals."""
 
-    def test_names_the_oke_dynamic_group(self):
-        # OCI creates this group in every tenancy; Pulumi must not create it.
-        assert identity.create_vault_read_policy(build_config()) is None
+    def test_names_the_node_pool_dynamic_group(self):
+        assert identity.create_vault_read_policy(build_config(), None) is None
         statement = identity.vault_read_statement(COMPARTMENT, VAULT)
-        assert f"Allow group {identity.OKE_DYNAMIC_GROUP_NAME} to read" in statement
+        assert (
+            "Allow dynamic-group "
+            f"{identity.OKE_NODE_POOL_DYNAMIC_GROUP_NAME} to read"
+        ) in statement
+
+    def test_dynamic_group_rule_matches_only_node_pool_instance_ids(self):
+        nodes = [
+            {"id": "ocid1.instance.oc1.eu-stockholm-1.node2"},
+            {"id": "ocid1.instance.oc1.eu-stockholm-1.node1"},
+        ]
+        assert identity.node_pool_matching_rule(nodes) == (
+            "ANY {instance.id = 'ocid1.instance.oc1.eu-stockholm-1.node1', "
+            "instance.id = 'ocid1.instance.oc1.eu-stockholm-1.node2'}"
+        )
+
+    def test_dynamic_group_rule_rejects_missing_or_wrong_resource_ids(self):
+        with pytest.raises(ValueError, match="instance OCID for every node"):
+            identity.node_pool_matching_rule([{"id": None}])
+        with pytest.raises(ValueError, match="non-instance OCID"):
+            identity.node_pool_matching_rule([{"id": "ocid1.cluster.oc1.test"}])
 
     def test_is_read_only(self):
         # "manage" would hand every pod on a node write access to the vault.
@@ -64,7 +82,7 @@ class TestPolicyIsOptional:
         # The only configuration in which the policy is skipped. Config requires
         # tenancy-id alongside vault-id, so a vault without a tenancy cannot
         # reach this function at all.
-        assert identity.create_vault_read_policy(build_config()) is None
+        assert identity.create_vault_read_policy(build_config(), None) is None
 
     def test_both_are_required_together(self):
         with pytest.raises(ValueError, match="Set vault-id"):

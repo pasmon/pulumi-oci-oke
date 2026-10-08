@@ -204,18 +204,18 @@ whole document rather than the credential.
 
 ### Granting vault access
 
-There is no manual step. `pulumi up` creates the policy, and it is the whole of
-Pulumi's IAM footprint:
+There is no manual IAM step. `pulumi up` creates a dynamic group for this node
+pool and the policy that grants it access:
 
 1. Create the Vault secrets above in the OCI console.
 2. Set `tenancy-id` and `vault-id` to the OCIDs from that Vault.
 3. `pulumi up`.
 
-The policy grants `read` on the `secret-family` of that one vault to OCI's
-built-in `oke` dynamic group, which matches every node instance in the tenancy:
+The policy grants `read` on the `secret-family` of that one vault to the
+`radio-oke-node-pool-instances` dynamic group:
 
 ```
-Allow group oke to read secret-family in compartment <compartment> where all {
+Allow dynamic-group radio-oke-node-pool-instances to read secret-family in compartment <compartment> where all {
 request.principal.type = 'instance',
 target.vault.id = '<vault-ocid>'}
 ```
@@ -225,8 +225,9 @@ OCID, the clause reads `in tenancy` instead. OCI rejects a tenancy OCID on the
 left of a statement with `Compartment {...} does not exist or is not part of
 the policy compartment subtree`; the root is spelled `tenancy`.
 
-Every tenancy already has that dynamic group, which is why Pulumi creates no
-`DynamicGroup` and why there is no console step at all.
+Pulumi derives the group's matching rule from the exact instance OCIDs reported
+by this node pool. It does not rely on a tenancy-wide group or grant access to
+other instances in the compartment.
 
 Verify:
 

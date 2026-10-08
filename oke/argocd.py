@@ -139,12 +139,13 @@ def bootstrap_application_spec(cfg):
     }
 
 
-def create_argocd(cfg, kubeconfig):
+def create_argocd(cfg, kubeconfig, bootstrap_dependencies=None):
     """Install Argo CD and seed the bootstrap Application.
 
     Args:
         cfg: the validated :class:`oke.config.Config`.
         kubeconfig: the OKE kubeconfig, used to build the Kubernetes provider.
+        bootstrap_dependencies: resources that must exist before GitOps starts.
 
     Returns:
         A dict with the resources that ``__main__`` exports.
@@ -228,7 +229,7 @@ def create_argocd(cfg, kubeconfig):
             ),
         )
 
-    root_dependencies = []
+    root_dependencies = list(bootstrap_dependencies or [])
     if argocd_release is not None:
         root_dependencies.append(argocd_release)
     if repository_secret is not None:

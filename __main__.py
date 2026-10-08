@@ -30,14 +30,6 @@ cfg = Config()
 network = networking.create_network(cfg)
 
 # --------------------------------------------------------------------------- #
-# Vault access for External Secrets Operator
-# --------------------------------------------------------------------------- #
-# IAM resources live in the tenancy root. This policy is what lets the cluster's
-# node instance principals read the vault, which is how ESO authenticates without
-# any static credential.
-vault_read_policy = identity.create_vault_read_policy(cfg)
-
-# --------------------------------------------------------------------------- #
 # Cluster
 # --------------------------------------------------------------------------- #
 oke = cluster.create_cluster(
@@ -48,6 +40,13 @@ oke = cluster.create_cluster(
     service_subnet_id=network["service_subnet"].id,
     node_metadata=wireguard.build_node_user_data(cfg),
 )
+
+# --------------------------------------------------------------------------- #
+# Vault access for External Secrets Operator
+# --------------------------------------------------------------------------- #
+# The dynamic group matches the exact instance OCIDs reported by this node
+# pool. The policy is needed before GitOps starts ESO and its ClusterSecretStore.
+vault_read_policy = identity.create_vault_read_policy(cfg, oke["node_pool"])
 
 # --------------------------------------------------------------------------- #
 # Kubeconfig
@@ -78,7 +77,11 @@ created_namespaces = namespaces.create_namespaces(
 # --------------------------------------------------------------------------- #
 # Argo CD
 # --------------------------------------------------------------------------- #
-argocd_resources = argocd.create_argocd(cfg, admin_kubeconfig.content)
+argocd_resources = argocd.create_argocd(
+    cfg,
+    admin_kubeconfig.content,
+    bootstrap_dependencies=[vault_read_policy] if vault_read_policy else None,
+)
 
 # --------------------------------------------------------------------------- #
 # Exports

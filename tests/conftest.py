@@ -100,6 +100,14 @@ class StackMocks(pulumi.runtime.Mocks):
             outputs.setdefault("id", "ocid1.policy.oc1..test")
         if args.typ == "oci:containerengine/cluster:Cluster":
             outputs.setdefault("name", "oke-cluster")
+        if args.typ == "oci:containerengine/nodePool:NodePool":
+            outputs.setdefault(
+                "nodes",
+                [
+                    {"id": "ocid1.instance.oc1.eu-stockholm-1.testnode1"},
+                    {"id": "ocid1.instance.oc1.eu-stockholm-1.testnode2"},
+                ],
+            )
 
         return [args.name + "_id", outputs]
 
@@ -206,7 +214,8 @@ def load_stack(stack_config):
     }
     os.environ["PULUMI_CONFIG"] = json.dumps(encoded)
 
-    pulumi.runtime.set_mocks(StackMocks(), project=PROJECT, stack="test")
+    mocks = StackMocks()
+    pulumi.runtime.set_mocks(mocks, project=PROJECT, stack="test")
 
     spec = importlib.util.spec_from_file_location("oke_main", PROGRAM_PATH)
     program = importlib.util.module_from_spec(spec)

@@ -40,7 +40,7 @@ regression. `tests/test_program_wiring.py` asserts the absence.
 | `oke/config.py` | Loads and validates all stack config. No resources. |
 | `oke/networking.py` | VCN, gateways, route table, security lists, subnets |
 | `oke/cluster.py` | Availability domain and image discovery, cluster, node pool |
-| `oke/identity.py` | The IAM policy granting nodes read on the vault |
+| `oke/identity.py` | The node-pool dynamic group and IAM policy granting nodes read on the vault |
 | `oke/kubeconfig.py` | Fetches and writes `out/oke_kubeconfig` |
 | `oke/argocd.py` | Argo CD Helm release and the single bootstrap Application |
 | `oke/namespaces.py` | The three namespaces GitOps writes into |
@@ -110,17 +110,19 @@ uv run pytest -v
 - **ESO authenticates as an instance principal, not Workload Identity.** OKE only
   issues workload identity tokens on *enhanced* clusters, which are billed hourly;
   this program creates a basic cluster to stay in Always Free. Do not reintroduce
-  `principalType: Workload` or a `DynamicGroup` here without changing the cluster
-  type first, and read README, "Why instance principals" for the trade-off.
+  `principalType: Workload` or enable Workload Identity without changing the
+  cluster type first; read README, "Why instance principals" for the trade-off.
 - **The IAM policy lives in the tenancy root**, not in the configured
   compartment. IAM resources are tenancy-scoped. The *statement* names the
   compartment holding the vault, which is a different thing — and when those
   two are the same, as they are when `compartment-id` is the tenancy OCID, the
   statement must say `in tenancy`. OCI does not accept a tenancy OCID on the
   left of a statement.
-- **Do not create the `oke` dynamic group.** OCI creates one in every tenancy and
-  it already matches the cluster's node instances. A Pulumi-managed group of that
-  name collides with it.
+- **Use a narrowly scoped dynamic group for instance principals.** OCI does not
+  provide a built-in `oke` group. Pulumi creates
+  `radio-oke-node-pool-instances` with a matching rule containing the exact
+  instance OCIDs reported by this node pool. Do not match every instance in a
+  compartment, especially when the configured compartment is the tenancy root.
 - **The policy must be `read` and scoped by `target.vault.id`.** `manage` grants
   every pod on a node write access; omitting the vault scope grants every vault
   in the compartment. Both are regressions the instance-principal trade depends on

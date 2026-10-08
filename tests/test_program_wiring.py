@@ -13,10 +13,11 @@ import os
 import pulumi
 import pytest
 
-from oke import argocd, kubeconfig, wireguard
+from oke import argocd, identity, kubeconfig, wireguard
 from oke import cluster as cluster_mod
 from tests.conftest import (
     BASE_STACK_CONFIG,
+    IDENTITY_STACK_CONFIG,
     REPO_ROOT,
     build_config,
     load_stack,
@@ -215,7 +216,7 @@ class TestHandoffFlag:
 
 
 class TestVaultAccess:
-    """The vault read policy appears only with both OCIDs configured."""
+    """Vault access is scoped to the node pool and ready before GitOps starts."""
 
     def test_absent_by_default(self, pulumi_stack):
         assert pulumi_stack.vault_read_policy is None
@@ -223,11 +224,45 @@ class TestVaultAccess:
     def test_created_with_a_tenancy_and_vault(self, identity_stack):
         assert identity_stack.vault_read_policy is not None
 
-    def test_created_before_the_argo_cd_bootstrap(self, identity_stack):
-        # ESO cannot sync anything until the policy exists, so it has to be
-        # wired before the hand-over rather than after GitOps takes over.
-        assert identity_stack.vault_read_policy is not None
-        assert identity_stack.argocd_resources["bootstrap_application"] is not None
+    def test_dynamic_group_uses_the_node_pool_output(self):
+        recorded = {}
+        real_dynamic_group = identity.oci.identity.DynamicGroup
+
+        def spy(*args, **kwargs):
+            recorded.update(kwargs)
+            return real_dynamic_group(*args, **kwargs)
+
+        identity.oci.identity.DynamicGroup = spy
+        program = None
+        try:
+            program = load_stack({**BASE_STACK_CONFIG, **IDENTITY_STACK_CONFIG})
+        finally:
+            identity.oci.identity.DynamicGroup = real_dynamic_group
+            if program is not None:
+                unload_stack(program)
+
+        assert recorded["name"] == identity.OKE_NODE_POOL_DYNAMIC_GROUP_NAME
+        assert isinstance(recorded["matching_rule"], pulumi.Output)
+
+    def test_policy_precedes_the_argo_cd_bootstrap(self):
+        recorded = {}
+        real_custom_resource = argocd.k8s.apiextensions.CustomResource
+
+        def spy(resource_name, *args, **kwargs):
+            if resource_name == "bootstrap-root-application":
+                recorded["opts"] = kwargs.get("opts")
+            return real_custom_resource(resource_name, *args, **kwargs)
+
+        argocd.k8s.apiextensions.CustomResource = spy
+        program = None
+        try:
+            program = load_stack({**BASE_STACK_CONFIG, **IDENTITY_STACK_CONFIG})
+        finally:
+            argocd.k8s.apiextensions.CustomResource = real_custom_resource
+            if program is not None:
+                unload_stack(program)
+
+        assert program.vault_read_policy in recorded["opts"].depends_on
 
 
 class TestNodeMetadata:
