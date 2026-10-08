@@ -416,6 +416,52 @@ that cloud-init is what joins a node to the cluster. The tunnel script therefore
 runs OKE's own bootstrap (`oke_init_script` from instance metadata) first and
 sets up the tunnel afterwards, so a tunnel failure never keeps a node out.
 
+### Router configuration
+
+The two sides need different halves of the key pair, which is the easiest thing
+to get wrong here because nothing in the node's output says so:
+
+- `wireguard-peer-public-key` is the **router's** public key. The nodes put it
+  in their `[Peer] PublicKey`.
+- The router's peer entry needs the **nodes'** public key, which this program
+  never prints because it is derived from the secret `wireguard-private-key`.
+
+Derive the node key locally, from the same private key you set in the config:
+
+```bash
+echo <wireguard-private-key> | wg pubkey
+```
+
+On MikroTik RouterOS that is one peer, not two. Both nodes share
+`wireguard-private-key`, so they share one public key:
+
+```routeros
+/interface/wireguard/peers/print detail
+```
+
+```routeros
+/interface/wireguard/peers/add interface=wg-radio \
+    public-key=<node public key> allowed-address=10.99.0.0/24
+```
+
+`endpoint-address` stays empty: the nodes are public and dial the router, so
+the router learns each endpoint from the handshake.
+
+**If `rx` and `tx` are both zero while the node reports bytes sent, the peer's
+`public-key` is the router's own key.** A peer configured with the router's key
+points at itself, and the handshake can never complete. This fails silently:
+the nodes transmit, nothing is ever received, and no error is reported on either
+side. Check that `public-key` on the peer is the node key and not the same
+value as `/interface/wireguard/print` reports for the interface.
+
+If UDP cannot reach the router at all, the WAN interface is not named `wan` on
+most RouterOS devices:
+
+```routeros
+/ip firewall filter/add chain=input protocol=udp dst-port=51820 \
+    in-interface=ether1 action=accept place-before=0
+```
+
 ### Addressing
 
 Both OKE nodes are workers and share one identical node user-data script, so
@@ -425,10 +471,16 @@ each derives its tunnel address from its own private IP:
 tunnel_ip = 10.99.0.<last octet of the node's private IP>
 ```
 
-The router takes `.1` and the nodes take their derived addresses, so **the
-router needs no change**. It already holds a single peer entry for the cluster
-with the same shared private key. Set `RADIO_API_WIREGUARD_CIDR=10.99.0.0/24` on
-the Raspberry Pi.
+The router needs a single peer entry for the whole cluster, using the node
+public key and `wireguard-subnet-cidr` as its `allowed-address`. Its own tunnel
+address does not have to be inside `wireguard-subnet-cidr`: traffic to a LAN
+host is an ordinary forward on the router, so the router's tunnel subnet only
+has to be distinct from the nodes'. Keep it distinct anyway, or the two ends
+disagree about which subnet is the tunnel.
+
+`RADIO_API_WIREGUARD_CIDR` on the Raspberry Pi must be the **nodes'** tunnel
+subnet, `10.99.0.0/24`, because that is the source address pod traffic is
+masqueraded onto.
 
 Pod traffic to the LAN is masqueraded onto the node's tunnel address, because pod
 addresses fall outside the tunnel range and would otherwise be rejected by the
