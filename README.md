@@ -411,6 +411,11 @@ The whole block is skipped unless `wireguard-peer-endpoint` is set. Setting the
 endpoint without the keys fails validation rather than provisioning a broken
 tunnel.
 
+Setting node user data replaces the cloud-init OKE would otherwise supply, and
+that cloud-init is what joins a node to the cluster. The tunnel script therefore
+runs OKE's own bootstrap (`oke_init_script` from instance metadata) first and
+sets up the tunnel afterwards, so a tunnel failure never keeps a node out.
+
 ### Addressing
 
 Both OKE nodes are workers and share one identical node user-data script, so

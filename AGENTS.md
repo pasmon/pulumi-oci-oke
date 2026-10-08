@@ -91,11 +91,17 @@ uv run pytest -v
   public". Making it private reintroduces the two-stage apply.
 - **Wireguard addresses are derived per node.** Both nodes run identical
   user-data, so a fixed address would collide. See `oke/wireguard.py`.
+- **Custom node user data must run OKE's bootstrap.** Setting `user_data`
+  replaces OKE's default cloud-init, and that default is what fetches
+  `oke_init_script` from instance metadata and runs it to configure kubelet and
+  register the node. Without it the node boots, the script exits 0 and the node
+  never joins; OKE terminates it after about twenty minutes with no error. The
+  Wireguard script runs the bootstrap first, before any step that can exit
+  early. `tests/test_wireguard.py` asserts both.
 - **Node user data runs on Oracle Linux 8, so it uses `dnf`.** There is no
-  `apt-get` on the OL8 image. The script runs under `set -eu`, and a node whose
-  user data fails never joins the cluster, so an `apt-get` there once kept the
-  node pool out of a working state and disabled the tunnel entirely. Anything in
-  that script that can fail must warn and exit 0 rather than abort.
+  `apt-get` on the OL8 image. The script runs under `set -eu`, so anything in the
+  tunnel section that can fail must warn and exit 0 rather than abort, or it
+  fails user data and leaves the node without its tunnel.
 - **A `nodeMetadata` change replaces the node pool.** OCI marks the property
   Updatable and accepts a new value, so `pulumi up` reports the pool updated and
   looks like it worked. The value only reaches instances *on launch*, so running
