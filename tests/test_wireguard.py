@@ -132,6 +132,49 @@ class TestNodeUserData:
         assert "PresharedKey = realPresharedKey=" in decoded
         assert "Calling __str__" not in decoded
 
+    def test_script_starts_with_a_shebang(self):
+        # cloud-init picks the content type from the shebang. Without one it
+        # reports text/x-not-multipart and never runs the script at all, which
+        # is indistinguishable from the script working.
+        payload = wireguard.build_node_user_data(wg_config())
+        decoded = base64.b64decode(payload).decode("utf-8")
+        assert decoded.startswith("#!/bin/bash\n")
+
+    def test_payload_is_base64_because_the_compute_api_requires_it(self):
+        # OCI rejects instance metadata whose user_data is not base64 with
+        # "user_data must be base64 encoded".
+        payload = wireguard.build_node_user_data(wg_config())
+        assert payload == base64.b64encode(base64.b64decode(payload)).decode("utf-8")
+        assert base64.b64decode(payload).decode("utf-8").startswith("#!")
+
+    def test_script_reads_the_vnics_endpoint(self):
+        # /opc/v2/vnic/ is singular and answers 404. The empty PRIVATE_IP then
+        # failed `test -n` under `set -eu`, aborting user data on its first real
+        # line, so no node ever got a tunnel and none ever joined the cluster.
+        payload = wireguard.build_node_user_data(wg_config())
+        decoded = base64.b64decode(payload).decode("utf-8")
+        assert "/opc/v2/vnics/" in decoded
+        assert not [
+            line
+            for line in decoded.splitlines()
+            if "/opc/v2/vnic/" in line and not line.lstrip().startswith("#")
+        ], "a comment may name the singular path, a command may not"
+
+    def test_a_missing_private_ip_warns_instead_of_failing_bootstrap(self):
+        payload = wireguard.build_node_user_data(wg_config())
+        decoded = base64.b64decode(payload).decode("utf-8")
+        assert (
+            'test -n "$PRIVATE_IP" || {' in decoded
+        ), "an unreadable metadata service must not abort user data"
+
+    def test_a_tunnel_that_will_not_start_warns_instead_of_failing_bootstrap(self):
+        payload = wireguard.build_node_user_data(wg_config())
+        decoded = base64.b64decode(payload).decode("utf-8")
+        assert (
+            "systemctl restart wg-quick@wg0 \\\n"
+            '  || echo "WARNING: wg-quick failed to start' in decoded
+        ), "a rejected key or unreachable peer must not keep the node unregistered"
+
     def test_script_installs_the_interface(self):
         payload = wireguard.build_node_user_data(wg_config())
         decoded = base64.b64decode(payload).decode("utf-8")

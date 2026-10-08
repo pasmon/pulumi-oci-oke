@@ -13,6 +13,16 @@ for the whole cluster with the same shared private key.
 The masquerade source range is the cluster's pods CIDR, so pod traffic leaving
 through the tunnel is collapsed onto the node's tunnel address and the
 Raspberry Pi's network guard still accepts it.
+
+``user_data`` is base64 because the Compute API rejects instance metadata that
+is not, and OKE writes node metadata values through unchanged. cloud-init
+decodes that base64 and then decides the content type from the shebang: without
+one it reports ``text/x-not-multipart`` and skips the script, so the tunnel is
+never configured and nothing says why.
+
+Every step that can fail warns and exits 0 rather than aborting. User data that
+exits non-zero leaves the node unregistered, so a missing tunnel would cost the
+cluster its capacity instead of costing one feature.
 """
 
 import base64
@@ -103,13 +113,25 @@ def build_wireguard_command(cfg, pods_cidr):
 
 def _wireguard_script(cfg, pods_cidr, private_key, preshared_key):
     """Render the setup script once the secret keys are resolved."""
-    return f"""set -eu
+    # The shebang is load-bearing: cloud-init decides the content type from it,
+    # and without one it treats plain text as unhandled rather than a script.
+    return f"""#!/bin/bash
+set -eu
 # OCI instance metadata service, reachable from every node on the metadata
 # endpoint. Used to discover this node's own private IP so the tunnel address
 # is unique across the pool.
+#
+# The endpoint is /opc/v2/vnics/, plural. /opc/v2/vnic/ answers 404, which used
+# to leave PRIVATE_IP empty and abort the script under `set -eu` on its first
+# real line, so the tunnel was never configured on any node.
 PRIVATE_IP=$(curl -s -H "Authorization: Bearer Oracle" \\
-  http://169.254.169.254/opc/v2/vnic/ | grep -o '"privateIp"[^,]*' | head -1 | cut -d'"' -f4)
-test -n "$PRIVATE_IP"
+  http://169.254.169.254/opc/v2/vnics/ | grep -o '"privateIp"[^,]*' | head -1 | cut -d'"' -f4)
+# Without a private IP there is no tunnel address to derive, but the node still
+# belongs in the cluster, so skip the tunnel rather than fail user data.
+test -n "$PRIVATE_IP" || {{
+  echo "WARNING: no private IP from the metadata service, no tunnel on this node" >&2
+  exit 0
+}}
 
 TUNNEL_SUBNET="{cfg.wireguard_subnet_cidr}"
 LAST_OCTET=$(echo "$PRIVATE_IP" | cut -d. -f4)
@@ -152,17 +174,23 @@ EOF
 
 chmod 600 /etc/wireguard/{WIREGUARD_INTERFACE}.conf
 systemctl enable wg-quick@{WIREGUARD_INTERFACE}
-systemctl restart wg-quick@{WIREGUARD_INTERFACE}
-# wg-quick reports active as soon as the link is configured, so this normally
-# returns immediately and needs no peer. Bound it anyway and warn rather than
-# abort: the same reasoning as the package install above.
+# An unreachable peer or a key the router rejects must not keep the node out of
+# the cluster. Under `set -eu` a failed restart aborts user data, and OKE then
+# never registers the node at all, so the cluster loses capacity instead of
+# just its tunnel.
+systemctl restart wg-quick@{WIREGUARD_INTERFACE} \\
+  || echo "WARNING: wg-quick failed to start, this node joins without a tunnel" >&2
 timeout 60 systemctl is-active --wait wg-quick@{WIREGUARD_INTERFACE} \\
   || echo "WARNING: {WIREGUARD_INTERFACE} did not come up" >&2
 """
 
 
 def build_node_user_data(cfg):
-    """Build the base64 node user data, or ``None`` when Wireguard is off."""
+    """Build the node user data, or ``None`` when Wireguard is off.
+
+    The value is base64 because the Compute API rejects instance metadata whose
+    ``user_data`` is not, and OKE writes node metadata values through unchanged.
+    """
     if not cfg.wireguard_enabled:
         return None
     script = build_wireguard_command(cfg, cfg.pods_cidr)
@@ -172,5 +200,5 @@ def build_node_user_data(cfg):
 
 
 def _encode(script):
-    """Base64 the script, because OKE node user data is not plain text."""
+    """Base64 the script, as the Compute API requires of user_data."""
     return base64.b64encode(script.encode("utf-8")).decode("utf-8")
