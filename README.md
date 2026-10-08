@@ -328,7 +328,9 @@ wait` and no second apply.
 `service` carries the OKE-managed load balancers. The third one is not
 optional: OKE rejects a node pool placed in a subnet registered as
 `service_lb_subnet_ids`, with *"The service subnets cannot be used by node
-pools"*. Sharing one subnet for both fails the node pool create.
+pools"*. Sharing one subnet for both fails the node pool create. Its security
+list allows public TCP/443 for the Envoy Gateway listener and the TCP backend
+range OCI's load balancer uses to reach its backends.
 
 ### Why the node subnet is public
 

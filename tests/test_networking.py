@@ -79,11 +79,44 @@ class TestIngressRules:
         assert all(rule.stateless is False for rule in rules)
 
 
+class TestServiceIngressRules:
+    """The public load balancer subnet admits HTTPS and its backend range."""
+
+    def test_public_https_listener_is_open(self):
+        rules = networking.build_service_ingress_rules("10.10.0.0/16")
+        https_rules = [
+            rule
+            for rule in rules
+            if rule.protocol == "6"
+            and rule.source == "0.0.0.0/0"
+            and rule.tcp_options.min == networking.HTTPS_PORT
+            and rule.tcp_options.max == networking.HTTPS_PORT
+        ]
+        assert len(https_rules) == 1
+        assert https_rules[0].stateless is False
+
+    def test_vcn_and_load_balancer_backend_rules_remain(self):
+        rules = networking.build_service_ingress_rules("10.10.0.0/16")
+        assert any(
+            rule.protocol == "all" and rule.source == "10.10.0.0/16" for rule in rules
+        )
+        assert any(
+            rule.protocol == "6"
+            and rule.source == "0.0.0.0/0"
+            and rule.tcp_options.min == networking.LB_BACKEND_PORT_MIN
+            and rule.tcp_options.max == networking.LB_BACKEND_PORT_MAX
+            for rule in rules
+        )
+
+
 class TestConstants:
     """The fixed values the design depends on."""
 
     def test_kube_api_port(self):
         assert networking.KUBE_API_PORT == 6443
+
+    def test_https_port(self):
+        assert networking.HTTPS_PORT == 443
 
     def test_load_balancer_backend_range(self):
         assert networking.LB_BACKEND_PORT_MIN == 30000
