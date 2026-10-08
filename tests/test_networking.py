@@ -50,18 +50,12 @@ class TestIngressRules:
         assert lb_rules[0].tcp_options.max == networking.LB_BACKEND_PORT_MAX
         assert lb_rules[0].tcp_options.min == networking.LB_BACKEND_PORT_MIN
 
-    def test_wireguard_opens_udp_only_when_configured(self):
+    def test_wireguard_never_opens_an_ingress_port(self):
+        # The nodes are public and the peer is the operator's router, so the
+        # tunnel is outbound and its return path is stateful. There is nothing
+        # for an internet-facing UDP rule to admit.
         rules = networking.build_ingress_rules("10.10.0.0/16")
         assert not [rule for rule in rules if rule.udp_options]
-
-        rules = networking.build_ingress_rules(
-            "10.10.0.0/16", wireguard_listen_port=51820
-        )
-        udp_rules = [rule for rule in rules if rule.udp_options]
-        assert len(udp_rules) == 1
-        assert udp_rules[0].udp_options.min == 51820
-        assert udp_rules[0].udp_options.max == 51820
-        assert udp_rules[0].protocol == "17"
 
     def test_ssh_is_closed_unless_explicitly_enabled(self):
         rules = networking.build_ingress_rules("10.10.0.0/16")
@@ -81,15 +75,8 @@ class TestIngressRules:
         assert ssh_rules[0].source == "0.0.0.0/0"
 
     def test_all_rules_are_stateful(self):
-        rules = networking.build_ingress_rules("10.10.0.0/16", 51820, True)
+        rules = networking.build_ingress_rules("10.10.0.0/16", True)
         assert all(rule.stateless is False for rule in rules)
-
-    def test_custom_wireguard_port_is_honoured(self):
-        rules = networking.build_ingress_rules(
-            "10.10.0.0/16", wireguard_listen_port=51821
-        )
-        udp_rules = [rule for rule in rules if rule.udp_options]
-        assert udp_rules[0].udp_options.min == 51821
 
 
 class TestConstants:

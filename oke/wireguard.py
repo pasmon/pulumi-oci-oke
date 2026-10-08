@@ -117,8 +117,14 @@ PREFIX=$(echo "$TUNNEL_SUBNET" | cut -d/ -f2)
 TUNNEL_BASE=$(echo "$TUNNEL_SUBNET" | cut -d/ -f1 | cut -d. -f1-3)
 ADDRESS="$TUNNEL_BASE.$LAST_OCTET/$PREFIX"
 
-apt-get update
-apt-get install -y wireguard-tools
+# Oracle Linux, not Debian: the node pool image is OL8 (see cluster.NODE_OS_TYPE),
+# which has dnf and no apt-get. Failing here used to abort user data under
+# `set -eu`, and a node whose user data fails never joins the cluster. So a
+# missing package costs the tunnel, not the node.
+dnf install -y wireguard-tools || {{
+  echo "WARNING: wireguard-tools unavailable, no tunnel on this node" >&2
+  exit 0
+}}
 install -d -m 700 /etc/wireguard
 install -m 644 /dev/null /etc/sysctl.d/99-{WIREGUARD_INTERFACE}.conf
 tee /etc/sysctl.d/99-{WIREGUARD_INTERFACE}.conf << 'EOF' > /dev/null
@@ -147,7 +153,11 @@ EOF
 chmod 600 /etc/wireguard/{WIREGUARD_INTERFACE}.conf
 systemctl enable wg-quick@{WIREGUARD_INTERFACE}
 systemctl restart wg-quick@{WIREGUARD_INTERFACE}
-systemctl is-active --wait wg-quick@{WIREGUARD_INTERFACE}
+# wg-quick reports active as soon as the link is configured, so this normally
+# returns immediately and needs no peer. Bound it anyway and warn rather than
+# abort: the same reasoning as the package install above.
+timeout 60 systemctl is-active --wait wg-quick@{WIREGUARD_INTERFACE} \\
+  || echo "WARNING: {WIREGUARD_INTERFACE} did not come up" >&2
 """
 
 

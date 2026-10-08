@@ -75,12 +75,16 @@ def _ingress_rule(protocol, source, min_port=None, max_port=None, transport=None
     )
 
 
-def build_ingress_rules(vcn_cidr, wireguard_listen_port=None, ssh_from_anywhere=False):
+def build_ingress_rules(vcn_cidr, ssh_from_anywhere=False):
     """Build the ingress rules for the worker node subnet.
+
+    There is deliberately no Wireguard rule. The nodes hold public IPs and the
+    peer is the operator's router, so every tunnel packet is either outbound or
+    the stateful return of an outbound one. Opening UDP to the internet would
+    only widen the node subnet for no reachable path.
 
     Args:
         vcn_cidr: the VCN CIDR, allowed to reach nodes on every port.
-        wireguard_listen_port: when set, opens UDP for the tunnel.
         ssh_from_anywhere: when true, opens SSH to the internet.
 
     Returns:
@@ -98,18 +102,6 @@ def build_ingress_rules(vcn_cidr, wireguard_listen_port=None, ssh_from_anywhere=
             transport="tcp",
         ),
     ]
-
-    if wireguard_listen_port is not None:
-        # The nodes dial the router, so this only has to allow the return path.
-        rules.append(
-            _ingress_rule(
-                "17",
-                "0.0.0.0/0",
-                min_port=wireguard_listen_port,
-                max_port=wireguard_listen_port,
-                transport="udp",
-            )
-        )
 
     if ssh_from_anywhere:
         rules.append(
@@ -187,9 +179,6 @@ def create_network(cfg):
         display_name="oke-nodes-securitylist",
         ingress_security_rules=build_ingress_rules(
             cfg.vcn_cidr,
-            wireguard_listen_port=(
-                cfg.wireguard_listen_port if cfg.wireguard_enabled else None
-            ),
             ssh_from_anywhere=cfg.ssh_from_anywhere,
         ),
         egress_security_rules=[
