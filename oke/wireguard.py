@@ -20,9 +20,13 @@ decodes that base64 and then decides the content type from the shebang: without
 one it reports ``text/x-not-multipart`` and skips the script, so the tunnel is
 never configured and nothing says why.
 
-Every step that can fail warns and exits 0 rather than aborting. User data that
-exits non-zero leaves the node unregistered, so a missing tunnel would cost the
-cluster its capacity instead of costing one feature.
+Any custom ``user_data`` replaces OKE's default node cloud-init, which is what
+runs the OKE bootstrap script and registers the node with the control plane.
+The script therefore runs that bootstrap itself, first, before anything that
+can exit early. Without it no node ever joins, however cleanly the script exits.
+
+Every tunnel step that can fail warns and exits 0 rather than aborting, so a
+missing tunnel costs one feature rather than the rest of the boot.
 """
 
 import base64
@@ -31,6 +35,9 @@ import ipaddress
 import pulumi
 
 WIREGUARD_INTERFACE = "wg0"
+
+# OKE's node bootstrap, served base64 by the instance metadata service.
+OKE_INIT_SCRIPT_URL = "http://169.254.169.254/opc/v2/instance/metadata/oke_init_script"
 
 # Nodes are behind NAT, so without this the router cannot open a return path.
 WIREGUARD_PERSISTENT_KEEPALIVE = 25
@@ -117,6 +124,16 @@ def _wireguard_script(cfg, pods_cidr, private_key, preshared_key):
     # and without one it treats plain text as unhandled rather than a script.
     return f"""#!/bin/bash
 set -eu
+# Custom user data replaces OKE's default cloud-init, and that default is what
+# fetches and runs the per-cluster bootstrap that sets up kubelet and joins the
+# node. Without this block every node boots, runs the tunnel setup, exits 0 and
+# is never registered. It runs first so that no early exit below can skip it.
+# See "Using Custom Cloud-init Initialization Scripts" in the OKE docs.
+curl --fail -H "Authorization: Bearer Oracle" -L0 \\
+  {OKE_INIT_SCRIPT_URL} \\
+  | base64 --decode > /var/run/oke-init.sh
+bash /var/run/oke-init.sh
+
 # OCI instance metadata service, reachable from every node on the metadata
 # endpoint. Used to discover this node's own private IP so the tunnel address
 # is unique across the pool.
@@ -140,9 +157,8 @@ TUNNEL_BASE=$(echo "$TUNNEL_SUBNET" | cut -d/ -f1 | cut -d. -f1-3)
 ADDRESS="$TUNNEL_BASE.$LAST_OCTET/$PREFIX"
 
 # Oracle Linux, not Debian: the node pool image is OL8 (see cluster.NODE_OS_TYPE),
-# which has dnf and no apt-get. Failing here used to abort user data under
-# `set -eu`, and a node whose user data fails never joins the cluster. So a
-# missing package costs the tunnel, not the node.
+# which has dnf and no apt-get. A missing package warns and skips the tunnel
+# rather than failing user data, which cloud-init would report as an error.
 dnf install -y wireguard-tools || {{
   echo "WARNING: wireguard-tools unavailable, no tunnel on this node" >&2
   exit 0
@@ -174,10 +190,8 @@ EOF
 
 chmod 600 /etc/wireguard/{WIREGUARD_INTERFACE}.conf
 systemctl enable wg-quick@{WIREGUARD_INTERFACE}
-# An unreachable peer or a key the router rejects must not keep the node out of
-# the cluster. Under `set -eu` a failed restart aborts user data, and OKE then
-# never registers the node at all, so the cluster loses capacity instead of
-# just its tunnel.
+# An unreachable peer or a key the router rejects is expected sometimes: the
+# peer is a home router on DDNS. Warn rather than fail user data over it.
 systemctl restart wg-quick@{WIREGUARD_INTERFACE} \\
   || echo "WARNING: wg-quick failed to start, this node joins without a tunnel" >&2
 timeout 60 systemctl is-active --wait wg-quick@{WIREGUARD_INTERFACE} \\

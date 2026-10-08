@@ -211,3 +211,52 @@ class TestNodeUserData:
         decoded = base64.b64decode(payload).decode("utf-8")
         assert "PostUp = iptables" in decoded
         assert "PostDown = iptables" in decoded
+
+
+class TestOkeBootstrap:
+    """Custom user data replaces OKE's default, so it must run the bootstrap."""
+
+    @staticmethod
+    def commands(decoded):
+        return [
+            line
+            for line in decoded.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+
+    def test_script_fetches_and_runs_the_oke_init_script(self):
+        # Without this, the node boots, the script exits 0, and kubelet is
+        # never configured, so the node never registers with the cluster.
+        decoded = decode_payload(wireguard.build_node_user_data(wg_config()))
+        assert wireguard.OKE_INIT_SCRIPT_URL in decoded
+        assert wireguard.OKE_INIT_SCRIPT_URL.endswith(
+            "/opc/v2/instance/metadata/oke_init_script"
+        )
+        assert "base64 --decode > /var/run/oke-init.sh" in decoded
+        assert "bash /var/run/oke-init.sh" in self.commands(decoded)
+
+    def test_bootstrap_fails_loudly_on_a_bad_fetch(self):
+        decoded = decode_payload(wireguard.build_node_user_data(wg_config()))
+        fetch = next(
+            line for line in self.commands(decoded) if line.startswith("curl --fail")
+        )
+        assert "Authorization: Bearer Oracle" in fetch
+
+    def test_bootstrap_runs_before_any_early_exit(self):
+        # The tunnel steps exit 0 when they cannot proceed. If any of them ran
+        # first, it would skip node registration.
+        commands = self.commands(
+            decode_payload(wireguard.build_node_user_data(wg_config()))
+        )
+        bootstrap = commands.index("bash /var/run/oke-init.sh")
+        first_exit = next(
+            index for index, line in enumerate(commands) if "exit 0" in line
+        )
+        first_tunnel_step = next(
+            index for index, line in enumerate(commands) if "PRIVATE_IP=" in line
+        )
+        assert bootstrap < first_tunnel_step < first_exit
+
+    def test_bootstrap_is_present_when_the_keys_are_secret(self):
+        decoded = decode_payload(wireguard.build_node_user_data(secret_config()))
+        assert "bash /var/run/oke-init.sh" in self.commands(decoded)
