@@ -14,6 +14,7 @@ import pulumi
 import pytest
 
 from oke import argocd, kubeconfig, wireguard
+from oke import cluster as cluster_mod
 from tests.conftest import (
     BASE_STACK_CONFIG,
     REPO_ROOT,
@@ -245,6 +246,29 @@ class TestNodeMetadata:
 
     def test_wireguard_export_is_false_by_default(self, pulumi_stack):
         assert pulumi_stack.cfg.wireguard_enabled is False
+
+    def test_a_user_data_change_replaces_the_node_pool(self):
+        # OKE marks nodeMetadata Updatable and accepts a new value, reporting
+        # the pool updated. It only reaches instances "on launch" though, so
+        # without replace_on_changes the tunnel silently never comes up. Assert
+        # on the create call, since the opts are an input, not an output.
+        recorded = {}
+        real_pool = cluster_mod.oci.containerengine.NodePool
+
+        def spy(*args, **kwargs):
+            recorded["opts"] = kwargs.get("opts")
+            return real_pool(*args, **kwargs)
+
+        cluster_mod.oci.containerengine.NodePool = spy
+        program = None
+        try:
+            program = load_stack(BASE_STACK_CONFIG)
+        finally:
+            cluster_mod.oci.containerengine.NodePool = real_pool
+            if program is not None:
+                unload_stack(program)
+
+        assert "nodeMetadata" in recorded["opts"].replace_on_changes
 
 
 def wireguard_user_data(program):
