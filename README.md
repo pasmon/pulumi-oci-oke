@@ -403,7 +403,6 @@ Lets cluster workloads reach services on your home LAN without exposing them.
 ```bash
 pulumi config set wireguard-peer-endpoint <public IP or DDNS of your router>
 pulumi config set wireguard-peer-public-key <router public key>
-pulumi config set --secret wireguard-private-key <shared node private key>
 pulumi config set --secret wireguard-preshared-key <tunnel preshared key>
 pulumi config set wireguard-subnet-cidr 10.99.0.0/24
 pulumi config set wireguard-allowed-cidrs '["192.168.88.200/32"]'
@@ -411,8 +410,11 @@ pulumi up
 ```
 
 The whole block is skipped unless `wireguard-peer-endpoint` is set. Setting the
-endpoint without the keys fails validation rather than provisioning a broken
-tunnel.
+endpoint without the router public key and preshared key fails validation.
+Each node generates its own private key in `/etc/wireguard/wg0-node.key`,
+root-only with mode 600, and reuses it on subsequent bootstrap runs. Private
+keys never appear in node-pool metadata or enrollment output. Remove an old
+unused `wireguard-private-key` setting with `pulumi config rm wireguard-private-key`.
 
 Setting node user data replaces the cloud-init OKE would otherwise supply, and
 that cloud-init is what joins a node to the cluster. The tunnel script therefore
@@ -426,26 +428,50 @@ to get wrong here because nothing in the node's output says so:
 
 - `wireguard-peer-public-key` is the **router's** public key. The nodes put it
   in their `[Peer] PublicKey`.
-- The router's peer entry needs the **nodes'** public key, which this program
-  never prints because it is derived from the secret `wireguard-private-key`.
+- Each router peer needs **one node's** public key and its tunnel address as a
+  `/32`. Never share a node key or use overlapping allowed addresses: the router
+  learns only one endpoint per key, so shared identities compete for replies.
 
-Derive the node key locally, from the same private key you set in the config:
+Bootstrap prints a `WireGuard enrollment:` line containing only the node's
+private IP, tunnel `/32`, and public key. Retrieve it from the node's
+`/var/log/cloud-init-output.log`, or read the public key and address on the node:
 
 ```bash
-echo <wireguard-private-key> | wg pubkey
+sudo wg show wg0 public-key
+ip -4 address show dev wg0
 ```
 
-On MikroTik RouterOS that is one peer, not two. Both nodes share
-`wireguard-private-key`, so they share one public key:
+With the OKE kubeconfig, an administrator can also use the existing host-mounted
+Flannel pods rather than opening node SSH. These commands are read-only and do
+not expose private or preshared keys:
 
-```routeros
-/interface/wireguard/peers/print detail
+```powershell
+$env:KUBECONFIG = 'out\oke_kubeconfig'
+kubectl -n kube-system get pods -l app=flannel -o wide
+kubectl -n kube-system exec <flannel-pod-on-target-node> -- chroot /host wg show wg0 public-key
+kubectl -n kube-system exec <flannel-pod-on-target-node> -- ip -4 address show dev wg0
 ```
+
+For each node, create one MikroTik peer. Configure the same preshared key as
+`wireguard-preshared-key` using a secure router administrative session; do not
+paste it into logs or git:
 
 ```routeros
 /interface/wireguard/peers/add interface=wg-radio \
-    public-key=<node public key> allowed-address=10.99.0.0/24
+    public-key="<node public key>" allowed-address=<node tunnel address>/32 \
+    preshared-key="<configured preshared key>" comment="Radio OKE node"
 ```
+
+When migrating an existing shared peer, narrow its allowed address to the
+retained node's `/32` before adding the other node's peer. The router cannot
+enroll nodes automatically: initial provisioning and node replacement require
+this registration before LAN access works. Reboots retain the key; replacements
+generate a new key and may receive a different tunnel address. Remove obsolete
+router peers when replacing nodes.
+
+Changing bootstrap code replaces the node pool on the next `pulumi up`. Do not
+apply it just to update running nodes: the current individually configured
+nodes can keep working until a planned replacement and router enrollment.
 
 `endpoint-address` stays empty: the nodes are public and dial the router, so
 the router learns each endpoint from the handshake.
@@ -474,12 +500,20 @@ each derives its tunnel address from its own private IP:
 tunnel_ip = 10.99.0.<last octet of the node's private IP>
 ```
 
-The router needs a single peer entry for the whole cluster, using the node
-public key and `wireguard-subnet-cidr` as its `allowed-address`. Its own tunnel
-address does not have to be inside `wireguard-subnet-cidr`: traffic to a LAN
-host is an ordinary forward on the router, so the router's tunnel subnet only
-has to be distinct from the nodes'. Keep it distinct anyway, or the two ends
-disagree about which subnet is the tunnel.
+Each router peer's allowed address is its node's derived address with a `/32`,
+not the whole cluster subnet. The router's own interface address may be in a
+different subnet, but then it needs an explicit return route. `allowed-address`
+does not install IP routes. For nodes in `10.99.0.0/24` and a router interface
+in `10.90.0.0/24`, add once:
+
+```routeros
+/ip/route/add dst-address=10.99.0.0/24 gateway=wg-radio comment="Radio OKE tunnel return route"
+/ip/route/print detail where dst-address="10.99.0.0/24"
+```
+
+The route must be active. Forwarding to the Pi and the LAN's return path through
+this router must also be allowed. Do not source-NAT the tunnel into a LAN address,
+since the Pi's guard expects the node tunnel subnet.
 
 `RADIO_API_WIREGUARD_CIDR` on the Raspberry Pi must be the **nodes'** tunnel
 subnet, `10.99.0.0/24`, because that is the source address pod traffic is

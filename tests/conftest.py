@@ -180,7 +180,6 @@ BASE_STACK_CONFIG = {
 WIREGUARD_STACK_CONFIG = {
     "wireguard-peer-endpoint": "198.51.100.7",
     "wireguard-peer-public-key": "peerPublicKey=",
-    "wireguard-private-key": "privateKey=",
     "wireguard-preshared-key": "presharedKey=",
     "wireguard-allowed-cidrs": ["192.168.88.200/32"],
 }

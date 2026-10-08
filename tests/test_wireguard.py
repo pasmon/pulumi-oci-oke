@@ -2,6 +2,9 @@
 
 import asyncio
 import base64
+import os
+import shutil
+import subprocess
 
 import pulumi
 import pytest
@@ -12,7 +15,6 @@ from tests.conftest import build_config
 WIREGUARD_VALUES = {
     "wireguard_peer_endpoint": "198.51.100.7",
     "wireguard_peer_public_key": "peerPublicKey=",
-    "wireguard_private_key": "privateKey=",
     "wireguard_preshared_key": "presharedKey=",
 }
 
@@ -25,14 +27,9 @@ def wg_config(**overrides):
 
 
 def secret_config():
-    """Build a config whose keys are Outputs, as ``get_secret`` returns them.
-
-    These two keys are the only secret values the program reads, and they are
-    the ones that end up inside node user data.
-    """
+    """Build a config with the preshared key as a secret Output."""
     asyncio.set_event_loop(asyncio.new_event_loop())
     return wg_config(
-        wireguard_private_key=pulumi.Output.from_input("realPrivateKey="),
         wireguard_preshared_key=pulumi.Output.from_input("realPresharedKey="),
     )
 
@@ -42,6 +39,86 @@ def decode_payload(payload):
     if isinstance(payload, pulumi.Output):
         payload = asyncio.get_event_loop().run_until_complete(payload.future())
     return base64.b64decode(payload).decode("utf-8")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Shell execution requires Unix permissions")
+class TestNodeKeyLifecycle:
+    """Execute the rendered key setup without touching host configuration."""
+
+    @staticmethod
+    def run_setup(directory, fail_generation=False):
+        bash = shutil.which("bash")
+        if bash is None:
+            pytest.skip("bash is required for bootstrap execution tests")
+        decoded = decode_payload(wireguard.build_node_user_data(wg_config()))
+        setup = decoded[
+            decoded.index("umask 077") : decoded.index("install -m 644 /dev/null")
+        ].replace("/etc/wireguard", directory.as_posix())
+        mock = """
+wg() {
+  case "$1" in
+    genkey) printf 'private-%s\\n' "$BASHPID" ;;
+    pubkey)
+      read -r key
+      case "$key" in
+        private-*) printf 'public-%s\\n' "${key#private-}" ;;
+        *) return 1 ;;
+      esac ;;
+  esac
+}
+"""
+        if fail_generation:
+            mock = "wg() { return 1; }\n"
+        script = (
+            "set -eu\nPRIVATE_IP=10.10.1.36\nTUNNEL_BASE=10.99.0\nLAST_OCTET=36\n"
+            + mock
+            + setup
+        )
+        return subprocess.run(  # pylint: disable=subprocess-run-check
+            [bash, "-s"], input=script, text=True, capture_output=True, check=False
+        )
+
+    def test_independent_nodes_and_repeated_bootstrap(self, tmp_path):
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        first.mkdir()
+        second.mkdir()
+        initial = self.run_setup(first)
+        assert initial.returncode == 0, initial.stderr
+        key = (first / "wg0-node.key").read_text()
+        repeated = self.run_setup(first)
+        other = self.run_setup(second)
+        assert repeated.returncode == other.returncode == 0
+        assert repeated.stdout == initial.stdout
+        assert (first / "wg0-node.key").read_text() == key
+        assert (second / "wg0-node.key").read_text() != key
+        assert (first / "wg0-node.key").stat().st_mode & 0o777 == 0o600
+        assert key.strip() not in initial.stdout
+
+    def test_generation_failure_does_not_leave_a_key(self, tmp_path):
+        result = self.run_setup(tmp_path, fail_generation=True)
+        assert result.returncode == 0
+        assert "WARNING: node key generation failed" in result.stderr
+        assert not list(tmp_path.iterdir())
+        assert "WireGuard enrollment:" not in result.stdout
+
+    def test_invalid_key_is_not_overwritten(self, tmp_path):
+        key = tmp_path / "wg0-node.key"
+        key.write_text("invalid\n")
+        result = self.run_setup(tmp_path)
+        assert result.returncode == 0
+        assert "WARNING: invalid node key" in result.stderr
+        assert key.read_text() == "invalid\n"
+        assert "WireGuard enrollment:" not in result.stdout
+
+    def test_symlink_is_rejected(self, tmp_path):
+        target = tmp_path / "target"
+        target.write_text("private-test\n")
+        (tmp_path / "wg0-node.key").symlink_to(target)
+        result = self.run_setup(tmp_path)
+        assert result.returncode == 0
+        assert "WARNING: node key must not be a symlink" in result.stderr
+        assert target.read_text() == "private-test\n"
 
 
 class TestNodeTunnelAddress:
@@ -124,13 +201,45 @@ class TestNodeUserData:
         decoded = base64.b64decode(payload).decode("utf-8")
         assert "Endpoint = 198.51.100.7:51820" in decoded
 
-    def test_script_carries_the_secret_keys(self):
-        # The keys are secret Outputs. Formatting one writes the stringified-
-        # Output warning into wg0.conf, which fails at the router, not at boot.
+    def test_script_resolves_the_secret_preshared_key(self):
         decoded = decode_payload(wireguard.build_node_user_data(secret_config()))
-        assert "PrivateKey = realPrivateKey=" in decoded
+        assert "PrivateKey = $NODE_PRIVATE_KEY" in decoded
         assert "PresharedKey = realPresharedKey=" in decoded
         assert "Calling __str__" not in decoded
+
+    def test_node_key_is_generated_locally_and_reused(self):
+        decoded = decode_payload(wireguard.build_node_user_data(wg_config()))
+        assert "NODE_KEY=/etc/wireguard/wg0-node.key" in decoded
+        assert 'if [ ! -e "$NODE_KEY" ]; then' in decoded
+        assert 'wg genkey > "$KEY_TEMP"' in decoded
+        assert 'mv "$KEY_TEMP" "$NODE_KEY"' in decoded
+        assert "wireguard-private-key" not in decoded
+
+    def test_node_key_is_protected_and_validated(self):
+        decoded = decode_payload(wireguard.build_node_user_data(wg_config()))
+        assert 'if [ -L "$NODE_KEY" ]; then' in decoded
+        assert decoded.index("umask 077") < decoded.index("KEY_TEMP=$(mktemp")
+        assert 'chmod 600 "$NODE_KEY"' in decoded
+        assert 'if ! NODE_PUBLIC_KEY=$(wg pubkey < "$NODE_KEY"); then' in decoded
+        assert 'echo "WARNING: node key generation failed' in decoded
+        assert 'echo "WARNING: invalid node key' in decoded
+
+    def test_enrollment_logs_only_public_key_and_host_address(self):
+        decoded = decode_payload(wireguard.build_node_user_data(wg_config()))
+        enrollment = next(
+            line
+            for line in decoded.splitlines()
+            if line.startswith('echo "WireGuard enrollment:')
+        )
+        assert "node=$PRIVATE_IP" in enrollment
+        assert "address=$TUNNEL_BASE.$LAST_OCTET/32" in enrollment
+        assert "public-key=$NODE_PUBLIC_KEY" in enrollment
+        assert "NODE_PRIVATE_KEY" not in enrollment
+
+    def test_legacy_shared_private_key_is_not_embedded(self):
+        cfg = wg_config(wireguard_private_key="legacySharedKey=")
+        decoded = decode_payload(wireguard.build_node_user_data(cfg))
+        assert "legacySharedKey=" not in decoded
 
     def test_script_starts_with_a_shebang(self):
         # cloud-init picks the content type from the shebang. Without one it
