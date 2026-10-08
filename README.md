@@ -344,6 +344,16 @@ replace.
 
 ## Upgrading the Kubernetes version
 
+`kubernetes-version` is unset by default, and an unset version means "take the
+newest one OKE advertises". Leave it unset and every `pulumi up` upgrades the
+cluster and replaces the node pool whenever OCI publishes a release, which is a
+surprise apply on a two-node cluster. Pin it, as in step 1 below, to upgrade
+deliberately.
+
+The pin is local. `Pulumi.oke-k8s.yaml` holds the encryptionsalt and the
+secrets, so it is not tracked, and a stack brought up elsewhere starts unpinned
+again.
+
 1. Set the new version and apply. This updates the control plane and the node
    pool image. It does not roll the nodes.
 
