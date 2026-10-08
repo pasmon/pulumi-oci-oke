@@ -91,6 +91,11 @@ uv run pytest -v
   public". Making it private reintroduces the two-stage apply.
 - **Wireguard addresses are derived per node.** Both nodes run identical
   user-data, so a fixed address would collide. See `oke/wireguard.py`.
+- **Node user data runs on Oracle Linux 8, so it uses `dnf`.** There is no
+  `apt-get` on the OL8 image. The script runs under `set -eu`, and a node whose
+  user data fails never joins the cluster, so an `apt-get` there once kept the
+  node pool out of a working state and disabled the tunnel entirely. Anything in
+  that script that can fail must warn and exit 0 rather than abort.
 - **ESO authenticates as an instance principal, not Workload Identity.** OKE only
   issues workload identity tokens on *enhanced* clusters, which are billed hourly;
   this program creates a basic cluster to stay in Always Free. Do not reintroduce

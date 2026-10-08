@@ -138,6 +138,31 @@ class TestNodeUserData:
         assert "systemctl enable wg-quick@wg0" in decoded
         assert "PersistentKeepalive = 25" in decoded
 
+    def test_script_installs_with_dnf_because_the_image_is_oracle_linux(self):
+        # apt-get does not exist on the OL8 node pool image, and a user data
+        # script that fails under `set -eu` keeps the node out of the cluster.
+        payload = wireguard.build_node_user_data(wg_config())
+        decoded = base64.b64decode(payload).decode("utf-8")
+        assert "dnf install -y wireguard-tools" in decoded
+        assert not [
+            line for line in decoded.splitlines() if line.startswith("apt-get")
+        ], "a comment may mention apt-get, a command may not"
+
+    def test_a_missing_package_does_not_fail_node_bootstrap(self):
+        payload = wireguard.build_node_user_data(wg_config())
+        decoded = base64.b64decode(payload).decode("utf-8")
+        assert (
+            "dnf install -y wireguard-tools || {" in decoded
+        ), "the install must not abort the script on failure"
+
+    def test_the_interface_check_is_bounded_and_warns_instead_of_aborting(self):
+        payload = wireguard.build_node_user_data(wg_config())
+        decoded = base64.b64decode(payload).decode("utf-8")
+        assert (
+            "timeout 60 systemctl is-active --wait wg-quick@wg0 \\\n"
+            "  || echo" in decoded
+        ), "an unbounded is-active --wait can hang user data forever"
+
     def test_rules_live_in_posthooks_so_they_survive_an_iptables_flush(self):
         payload = wireguard.build_node_user_data(wg_config())
         decoded = base64.b64decode(payload).decode("utf-8")
