@@ -138,7 +138,6 @@ class Config:
         # Wireguard
         self.wireguard_peer_endpoint = self.config.get("wireguard-peer-endpoint")
         self.wireguard_peer_public_key = self.config.get("wireguard-peer-public-key")
-        self.wireguard_private_key = self.config.get_secret("wireguard-private-key")
         self.wireguard_preshared_key = self.config.get_secret("wireguard-preshared-key")
         self.wireguard_subnet_cidr = (
             self.config.get("wireguard-subnet-cidr") or "10.99.0.0/24"
@@ -316,10 +315,10 @@ class Config:
         if not self.wireguard_enabled:
             return
 
-        if self.wireguard_peer_public_key is None or self.wireguard_private_key is None:
+        if self.wireguard_peer_public_key is None:
             raise ValueError(
-                "Set wireguard-peer-endpoint, wireguard-peer-public-key, and "
-                "wireguard-private-key together, or omit them all."
+                "Set wireguard-peer-endpoint and wireguard-peer-public-key "
+                "together, or omit them all."
             )
         if self.wireguard_preshared_key is None:
             raise ValueError(

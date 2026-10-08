@@ -166,14 +166,12 @@ class TestWireguardValidation:
             build_config(
                 wireguard_peer_endpoint="198.51.100.7",
                 wireguard_peer_public_key="peerPublicKey=",
-                wireguard_private_key="privateKey=",
             )
 
     def test_complete_configuration_is_accepted(self):
         cfg = build_config(
             wireguard_peer_endpoint="198.51.100.7",
             wireguard_peer_public_key="peerPublicKey=",
-            wireguard_private_key="privateKey=",
             wireguard_preshared_key="presharedKey=",
             wireguard_allowed_cidrs=["192.168.88.200/32"],
         )
@@ -186,7 +184,6 @@ class TestWireguardValidation:
             build_config(
                 wireguard_peer_endpoint="198.51.100.7",
                 wireguard_peer_public_key="peerPublicKey=",
-                wireguard_private_key="privateKey=",
                 wireguard_preshared_key="presharedKey=",
                 wireguard_subnet_cidr="10.10.0.0/24",
             )
@@ -196,7 +193,6 @@ class TestWireguardValidation:
             build_config(
                 wireguard_peer_endpoint="198.51.100.7",
                 wireguard_peer_public_key="peerPublicKey=",
-                wireguard_private_key="privateKey=",
                 wireguard_preshared_key="presharedKey=",
                 wireguard_subnet_cidr="10.99.0.0/30",
             )
@@ -206,7 +202,6 @@ class TestWireguardValidation:
             build_config(
                 wireguard_peer_endpoint="198.51.100.7",
                 wireguard_peer_public_key="peerPublicKey=",
-                wireguard_private_key="privateKey=",
                 wireguard_preshared_key="presharedKey=",
                 wireguard_allowed_cidrs=["not-a-cidr"],
             )

@@ -6,9 +6,9 @@ derives the tunnel address from the node's own private IP::
 
     tunnel_ip = 10.99.0.<last octet of the node's private IP>
 
-Both nodes stay inside the tunnel subnet, the router keeps the first usable
-address, and the router needs no change: it already holds a single peer entry
-for the whole cluster with the same shared private key.
+Each node generates and retains its own private key on disk. The router needs
+one peer per node, with that node's public key and tunnel address as a /32.
+Sharing a private key makes the router's learned endpoint roam between nodes.
 
 The masquerade source range is the cluster's pods CIDR, so pod traffic leaving
 through the tunnel is collapsed onto the node's tunnel address and the
@@ -98,10 +98,8 @@ def build_wireguard_command(cfg, pods_cidr):
     The same script runs on every node. It reads the instance metadata for its
     own private IP and derives the tunnel address from it.
 
-    The two keys are secret Outputs, so the whole script is built in an apply.
-    Formatting an Output writes the stringified-Output warning into wg0.conf
-    instead of the key, which fails authentication at the router rather than at
-    boot.
+    The preshared key is a secret Output, so the script is built in an apply.
+    Node private keys are generated on the node, never in pool metadata.
 
     Args:
         cfg: the validated :class:`oke.config.Config`.
@@ -110,15 +108,13 @@ def build_wireguard_command(cfg, pods_cidr):
     Returns:
         The shell script, or an ``Output[str]`` of it when a key is secret.
     """
-    keys = [cfg.wireguard_private_key, cfg.wireguard_preshared_key]
-    if any(isinstance(key, pulumi.Output) for key in keys):
-        return pulumi.Output.all(*keys).apply(
-            lambda resolved: _wireguard_script(cfg, pods_cidr, *resolved)
-        )
-    return _wireguard_script(cfg, pods_cidr, *keys)
+    key = cfg.wireguard_preshared_key
+    if isinstance(key, pulumi.Output):
+        return key.apply(lambda resolved: _wireguard_script(cfg, pods_cidr, resolved))
+    return _wireguard_script(cfg, pods_cidr, key)
 
 
-def _wireguard_script(cfg, pods_cidr, private_key, preshared_key):
+def _wireguard_script(cfg, pods_cidr, preshared_key):
     """Render the setup script once the secret keys are resolved."""
     # The shebang is load-bearing: cloud-init decides the content type from it,
     # and without one it treats plain text as unhandled rather than a script.
@@ -164,6 +160,28 @@ dnf install -y wireguard-tools || {{
   exit 0
 }}
 install -d -m 700 /etc/wireguard
+umask 077
+NODE_KEY=/etc/wireguard/{WIREGUARD_INTERFACE}-node.key
+if [ -L "$NODE_KEY" ]; then
+  echo "WARNING: node key must not be a symlink, no tunnel on this node" >&2
+  exit 0
+fi
+if [ ! -e "$NODE_KEY" ]; then
+  KEY_TEMP=$(mktemp /etc/wireguard/{WIREGUARD_INTERFACE}-node.key.XXXXXX)
+  if ! wg genkey > "$KEY_TEMP"; then
+    rm -f "$KEY_TEMP"
+    echo "WARNING: node key generation failed, no tunnel on this node" >&2
+    exit 0
+  fi
+  mv "$KEY_TEMP" "$NODE_KEY"
+fi
+chmod 600 "$NODE_KEY"
+if ! NODE_PUBLIC_KEY=$(wg pubkey < "$NODE_KEY"); then
+  echo "WARNING: invalid node key, no tunnel on this node" >&2
+  exit 0
+fi
+NODE_PRIVATE_KEY=$(cat "$NODE_KEY")
+echo "WireGuard enrollment: node=$PRIVATE_IP address=$TUNNEL_BASE.$LAST_OCTET/32 public-key=$NODE_PUBLIC_KEY"
 install -m 644 /dev/null /etc/sysctl.d/99-{WIREGUARD_INTERFACE}.conf
 tee /etc/sysctl.d/99-{WIREGUARD_INTERFACE}.conf << 'EOF' > /dev/null
 net.ipv4.ip_forward = 1
@@ -174,7 +192,7 @@ tee /etc/wireguard/{WIREGUARD_INTERFACE}.conf << EOF > /dev/null
 [Interface]
 Address = $ADDRESS
 ListenPort = {cfg.wireguard_listen_port}
-PrivateKey = {private_key}
+PrivateKey = $NODE_PRIVATE_KEY
 PostUp = iptables -t nat -A POSTROUTING -s {pods_cidr} -o {WIREGUARD_INTERFACE} -j MASQUERADE
 PostUp = iptables -I FORWARD -i {WIREGUARD_INTERFACE} -j ACCEPT
 PostDown = iptables -t nat -D POSTROUTING -s {pods_cidr} -o {WIREGUARD_INTERFACE} -j MASQUERADE

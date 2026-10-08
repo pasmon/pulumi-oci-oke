@@ -91,6 +91,10 @@ uv run pytest -v
   public". Making it private reintroduces the two-stage apply.
 - **Wireguard addresses are derived per node.** Both nodes run identical
   user-data, so a fixed address would collide. See `oke/wireguard.py`.
+- **Wireguard private keys are node-local.** Bootstrap generates and retains
+  `/etc/wireguard/wg0-node.key` with mode 600. Never embed a shared node private
+  key in metadata. Enroll one router peer per node with its public key and /32
+  tunnel address; replacement nodes need enrollment again.
 - **Custom node user data must run OKE's bootstrap.** Setting `user_data`
   replaces OKE's default cloud-init, and that default is what fetches
   `oke_init_script` from instance metadata and runs it to configure kubelet and
