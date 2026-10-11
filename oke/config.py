@@ -26,13 +26,11 @@ ALWAYS_FREE_BLOCK_VOLUME_GB = 200
 # Budgeting the requested size instead understated usage by 30 GB.
 AUDIO_CACHE_GB = 50
 
-# Provisioned size of the radio-db CloudNativePG data volume, for the same
-# reason: 50 GB is the OCI Block Volume floor, so no smaller claim is possible.
-DATABASE_VOLUME_GB = 50
-
 # Every block volume this tenancy keeps permanently provisioned. Kept together
-# so the Always Free check and the README cost table cannot drift apart.
-DATA_VOLUME_GB = AUDIO_CACHE_GB + DATABASE_VOLUME_GB
+# so the Always Free check and the README cost table cannot drift apart. The
+# database is not in it: it is Aiven's free tier now, and its CloudNativePG data
+# volume is gone, which is where the 50 GB of headroom came from.
+DATA_VOLUME_GB = AUDIO_CACHE_GB
 
 # Each node's tunnel address reuses the last octet of its private IP, so the
 # tunnel subnet has to be wide enough for those octets to stay inside it.
@@ -272,15 +270,14 @@ class Config:
                 f"   boot volumes     : {self.boot_volume_size_gbs * self.node_count} GB "
                 f"({self.node_count} x {self.boot_volume_size_gbs} GB)\n"
                 f"   audio cache      : {AUDIO_CACHE_GB} GB\n"
-                f"   radio database   : {DATABASE_VOLUME_GB} GB\n"
                 f"   total            : {self.total_block_volume_gb} GB\n"
                 f"   Always Free allows: {ALWAYS_FREE_BLOCK_VOLUME_GB} GB per tenancy\n"
                 "\n"
-                "   This is still inside Always Free, but nothing else fits. Both data\n"
-                "   volumes are already at the 50 GB OCI Block Volume minimum, so they\n"
-                "   cannot be made smaller, and expanding either one bills immediately.\n"
-                "   This also rules out volumeSnapshot backups for the database, which\n"
-                "   draw on the same allowance. To create headroom, drop a node:\n"
+                "   This is still inside Always Free, but nothing else fits. The audio\n"
+                "   cache is already at the 50 GB OCI Block Volume minimum, so it cannot\n"
+                "   be made smaller, and expanding it bills immediately.\n"
+                "   A volumeSnapshot backup of the cache would draw on the same\n"
+                "   allowance. To create headroom, drop a node:\n"
                 "\n"
                 "       pulumi config set node-count 1\n"
                 "\n"

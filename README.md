@@ -40,26 +40,28 @@ Other allowances this design respects:
 
 | Resource | Used | Always Free limit |
 |---|---|---|
-| Block volume | 2 x 50 GB boot + 50 GB cache + 50 GB database | 200 GB |
+| Block volume | 2 x 50 GB boot + 50 GB cache | 200 GB |
 | Flexible Load Balancer | 1 (Envoy Gateway) | 1 |
 | VCN | 1 | 2 (Free Tier) |
 
-**Block volume is at its ceiling.** Both data volumes are already at the 50 GB
-OCI Block Volume minimum, so neither can be made smaller, and two nodes need
-2 x 50 GB of boot volume. The total is exactly 200 GB, which is still inside
-Always Free, but nothing else fits: expanding either volume bills immediately,
-and this is why the CloudNativePG cluster has no `volumeSnapshot` backup
-configured, since snapshots draw on the same allowance. `oke/config.py` warns
-about this at `pulumi preview` rather than rejecting it, because reaching the
-ceiling is a deliberate cost decision rather than an impossible configuration.
-Creating headroom means dropping a node:
+**Block volume has 50 GB of headroom.** The audio cache is already at the 50 GB
+OCI Block Volume minimum, so it cannot be made smaller, and two nodes need
+2 x 50 GB of boot volume. The total is 150 GB against the 200 GB allowance. That
+headroom is what moving the database off this cluster bought: the CloudNativePG
+data volume was a third 50 GB claim and the tenancy sat at exactly 200 GB, with
+nothing else able to fit and expanding any volume billing immediately.
+
+`oke/config.py` still warns when a configuration does reach 200 GB rather than
+rejecting it, because reaching the ceiling is a deliberate cost decision rather
+than an impossible configuration. It does not warn for the defaults, which are
+now under it. Creating more headroom still means dropping a node:
 
 ```bash
 pulumi config set node-count 1
 ```
 
-One node frees 50 GB, at the cost of the second node the shared audio cache
-relies on for co-location.
+One node frees another 50 GB, at the cost of the second node the shared audio
+cache relies on for co-location.
 
 ### Idle reclamation
 

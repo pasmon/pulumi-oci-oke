@@ -7,7 +7,6 @@ import pytest
 from oke.config import (
     ALWAYS_FREE_BLOCK_VOLUME_GB,
     AUDIO_CACHE_GB,
-    DATABASE_VOLUME_GB,
     Config,
 )
 from tests.conftest import FakeConfig as _FakeConfig
@@ -121,10 +120,10 @@ class TestNodeSizing:
 
     def test_block_volume_budget_accounts_for_every_data_volume(self):
         cfg = build_config(node_count=2, boot_volume_size_gbs=50)
-        # 2 x 50 GB boot volumes, plus the 50 GB audio cache and the 50 GB
-        # database. Both data volumes are the OCI Block Volume floor, which is
-        # what the tenancy is billed for rather than what the PVC requests.
-        assert cfg.total_block_volume_gb == 200
+        # 2 x 50 GB boot volumes plus the 50 GB audio cache, which is the OCI
+        # Block Volume floor and therefore what the tenancy is billed for rather
+        # than what the PVC requests.
+        assert cfg.total_block_volume_gb == 150
 
     def test_block_volume_accounting_uses_provisioned_not_requested_size(self):
         """The 20Gi audio cache claim is provisioned at the 50 GB OCI minimum.
@@ -133,15 +132,26 @@ class TestNodeSizing:
         a configuration that actually billed 200 GB pass as 170 GB.
         """
         assert AUDIO_CACHE_GB == 50
-        assert DATABASE_VOLUME_GB == 50
 
-    def test_defaults_reach_the_always_free_block_volume_ceiling(self, capsys):
-        """Defaults sit exactly on 200 GB, so they must warn, not raise.
+    def test_defaults_leave_always_free_block_volume_headroom(self, capsys):
+        """Dropping the database volume puts the default under the ceiling.
 
-        Reaching the ceiling is still inside Always Free. Raising here would
-        make the default configuration impossible to preview.
+        It was exactly 200 GB while the CloudNativePG data volume existed, which
+        meant the default configuration warned on every preview. With that
+        volume gone there is a data volume's worth of headroom, and the warning
+        is for configurations that actually reach 200 GB.
         """
         cfg = build_config(node_count=2, boot_volume_size_gbs=50)
+        assert cfg.total_block_volume_gb < ALWAYS_FREE_BLOCK_VOLUME_GB
+        assert "no Always Free headroom" not in capsys.readouterr().out
+
+    def test_reaching_the_block_volume_ceiling_warns_rather_than_raising(self, capsys):
+        """Boot volumes large enough to reach 200 GB must warn, not raise.
+
+        Reaching the ceiling is still inside Always Free. Raising here would
+        make the configuration impossible to preview.
+        """
+        cfg = build_config(node_count=2, boot_volume_size_gbs=75)
         assert cfg.total_block_volume_gb == ALWAYS_FREE_BLOCK_VOLUME_GB
         assert "no Always Free headroom" in capsys.readouterr().out
 
