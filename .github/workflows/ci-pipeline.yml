@@ -9,7 +9,9 @@ on:
 jobs:
   test:
     name: Lint, Syntax Check & Test
-    runs-on: ubuntu-latest
+    # RunsOn self-hosted runners in our own AWS account, on the free
+    # non-commercial licence. Hosted Actions minutes ran out. See README, "CI".
+    runs-on: runs-on=${{ github.run_id }}/runner=2cpu-linux-x64
     steps:
       - name: Checkout
         uses: actions/checkout@v7

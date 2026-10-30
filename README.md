@@ -563,6 +563,18 @@ There is no `gitops/` directory. This repository ships manifests to Kubernetes
 nowhere; `argo-apps` is the only GitOps tree, which is what makes the hand-over
 a single Application rather than a chain.
 
+## CI
+
+CI runs on [RunsOn](https://runs-on.com) self-hosted GitHub Actions runners
+under its free licence for non-commercial projects. The workflow selects them
+with a `runs-on=${{ github.run_id }}/runner=...` label, so the RunsOn GitHub App
+must be installed on this repository and the RunsOn stack must be running with
+its licence key. The key belongs to that stack, not to this repository.
+
+CI runners for this project are kindly provided by
+[RunsOn](https://runs-on.com), the modern way to self-host GitHub Actions
+runners.
+
 ## Reference
 
 - [Always Free resources](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm)
