@@ -5,9 +5,9 @@
 Provisions an OCI managed Kubernetes cluster with two ARM nodes and hands over to
 Argo CD. Read `README.md` first, especially the cost section.
 
-## The two invariants
+## The three invariants
 
-Break either of these and the design stops working.
+Break any of these and the design stops working.
 
 **1. One `pulumi up` must be sufficient.** Pulumi may not create, or depend on,
 any object whose CRD is installed by Argo CD. Every Pulumi resource is either an
